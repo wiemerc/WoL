@@ -1,0 +1,17 @@
+/*
+ * winhello.c - my first attempt at Windows system programming
+ */
+
+
+#include <windows.h>
+#include <stdio.h>
+
+
+int cwmain(int argc, LPTSTR argv[])
+{
+    HANDLE hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD  nOut;
+
+    WriteFile(hStdOut, "hello, windows\r\n", 16, &nOut, NULL);
+    return 0;
+}
