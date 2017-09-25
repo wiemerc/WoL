@@ -11,17 +11,10 @@
 
 
 int cwmain();
-//int cwmain(int argc, char **argv);
 
 
 void start()
 {
-    // push argc (D0) / argv (A0) onto stack
-//    asm("move.l     A0, -(A7)\n"
-//        "move.l     D0, -(A7)\n");
-
     // call cwmain()
     cwmain();
-//    asm("jsr        _cwmain\n"
-//        "add.l      #8, A7");
 }
