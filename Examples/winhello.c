@@ -4,7 +4,6 @@
 
 
 #include <windows.h>
-#include <stdio.h>
 
 
 int cwmain(int argc, LPTSTR argv[])
