@@ -1,12 +1,11 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-
-static const unsigned long PE_IMAGE_BASE = 0x00400000;
 
 //
 // necessary struct definitions (adapted from the ones provided by Microsoft in winnt.h)
@@ -141,12 +140,16 @@ void hexdump (const uint8_t *buffer, size_t length)
 //
 int main(int argc, char **argv)
 {
-    int                  fd, n;
+    int                  fd, n, prot;
     struct stat          sb;
+    void                 *baseptr;
     IMAGE_DOS_HEADER     *doshdr;
     IMAGE_NT_HEADERS     *nthdrs;
     IMAGE_SECTION_HEADER *sechdr;
+    int32_t              (*code)();
+    void                 *data;
 
+    // map whole executable into memory
     if ((fd = open(argv[1], O_RDONLY)) == -1) {
         perror("ERROR: could not open file");
         return 1;
@@ -156,16 +159,32 @@ int main(int argc, char **argv)
         close(fd);
         return 1;
     }
-    if ((doshdr = (IMAGE_DOS_HEADER *) mmap((void *) PE_IMAGE_BASE, sb.st_size, PROT_READ, MAP_SHARED | MAP_FIXED, fd, 0)) == MAP_FAILED) {
+    if ((baseptr = mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0)) == MAP_FAILED) {
         perror("ERROR: could not memory-map file");
         close(fd);
         return 1;
     }
+    printf("executable mapped at address 0x%08x\n", (unsigned int) baseptr);
     
-    printf("executable mapped at address 0x%08x\n", (unsigned int) doshdr);
-    printf("signature of DOS header: 0x%04x\n", doshdr->e_magic);
-    nthdrs = (IMAGE_NT_HEADERS *) (((uint8_t *) doshdr) + doshdr->e_lfanew);
-    printf("signature of NT headers: 0x%08x\n", nthdrs->Signature);
+    doshdr = (IMAGE_DOS_HEADER *) baseptr;
+    printf("checking signature of DOS header... ");
+    if (doshdr->e_magic == 0x5a4d) {
+        printf("ok\n");
+    }
+    else {
+        printf("not ok - aborting\n");
+        goto cleanup;
+    }
+    
+    nthdrs = (IMAGE_NT_HEADERS *) (((uint8_t *) baseptr) + doshdr->e_lfanew);
+    printf("checking signature of NT headers... ");
+    if (nthdrs->Signature == 0x00004550) {
+        printf("ok\n");
+    }
+    else {
+        printf("not ok - aborting\n");
+        goto cleanup;
+    }
     printf("number of sections: %d\n", nthdrs->FileHeader.NumberOfSections);
     printf("image base address: 0x%08x\n", nthdrs->OptionalHeader.ImageBase);
     
@@ -173,13 +192,66 @@ int main(int argc, char **argv)
     for (sechdr = (IMAGE_SECTION_HEADER *) (((uint8_t *) nthdrs) + sizeof(IMAGE_NT_HEADERS)), n = 1;
         n <= nthdrs->FileHeader.NumberOfSections;
         ++sechdr, ++n) {
-        printf("%.8s at 0x%08x, will be mapped at 0x%08x\n", sechdr->Name,
-               sechdr->PointerToRawData,
-               sechdr->VirtualAddress + nthdrs->OptionalHeader.ImageBase);
-        hexdump(((uint8_t *) doshdr) + sechdr->PointerToRawData, 16);
+        void     *secptr  = (void *) (sechdr->PointerToRawData + (uint8_t *) baseptr);
+        void     *secbase = (void *) (sechdr->VirtualAddress + nthdrs->OptionalHeader.ImageBase);
+        uint32_t secsize  = sechdr->Misc.VirtualSize;
+        
+        printf("%.8s at %p, %d bytes large, will be mapped at %p\n",
+               sechdr->Name,
+               secptr,
+               secsize,
+               secbase);
+        
+        // create anonymous mapping at the corresponding address,
+        // writeable so we can copy the data (see below)
+        if (mmap(secbase,
+                 secsize,
+                 PROT_WRITE,
+                 MAP_ANON | MAP_SHARED | MAP_FIXED,
+                 -1,
+                 0) == MAP_FAILED) {
+            perror("could not create anonymous mapping");
+            goto cleanup;
+        }
+        
+        // copy section data to the mapped area
+        // We copy the data because the offset is (normally) not a multiple
+        // of the page size, so we can't use it in the mmap() call. We can't
+        // use lseek() either, because mmap() seems to ignore the current position.
+        memcpy(secbase, secptr, secsize);
+        
+        // set protection of mapped area depending on section name
+        if (strncmp((const char *) sechdr->Name, ".text", 8) == 0) {
+            prot = PROT_READ | PROT_EXEC;
+            code = (int32_t (*)()) secbase;
+        }
+        else if (strncmp((const char *) sechdr->Name, ".data", 8) == 0) {
+            prot = PROT_READ | PROT_WRITE;
+            data = secbase;
+        }
+        else if (strncmp((const char *) sechdr->Name, ".rdata", 8) == 0) {
+            prot = PROT_READ;
+        }
+        else if (strncmp((const char *) sechdr->Name, ".idata", 8) == 0) {
+            // TODO: What is stored in this section?
+            prot = PROT_READ | PROT_WRITE;
+        }
+        if (mprotect(secbase, secsize, prot) == -1) {
+            perror("cannot set protection of mapped area");
+            goto cleanup;
+        }
+        
+        // dump the first 16 bytes for inspection
+        hexdump((uint8_t *) secbase, 16);
     }
+        
+    printf("string before program ran: %s\n", (char *) data);
+    printf("exit code of program: %d\n", code());
+    printf("string after program ran: %s\n", (char *) data);
     
-    munmap ((void *) doshdr, sb.st_size);
-    close (fd);
+//    while(getchar() != EOF);
+cleanup:
+    munmap(baseptr, sb.st_size);
+    close(fd);
     return 0;
 }
