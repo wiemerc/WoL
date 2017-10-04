@@ -6,7 +6,7 @@
 #include <windows.h>
 
 
-int cwmain(int argc, LPTSTR argv[])
+int cwmain()
 {
     HANDLE hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD  nOut;
