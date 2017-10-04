@@ -103,6 +103,37 @@ typedef struct {
     uint32_t Characteristics;
 } IMAGE_SECTION_HEADER;
 
+typedef struct {
+    uint16_t Hint;
+    uint8_t Name[1];
+} IMAGE_IMPORT_BY_NAME;
+    
+typedef struct {
+    union {
+        uint32_t ForwarderString;
+        uint32_t Function;
+        uint32_t Ordinal;
+        uint32_t AddressOfData;
+    } u1;
+} IMAGE_THUNK_DATA;
+    
+typedef struct {
+    union {
+        uint32_t Characteristics;
+        uint32_t OriginalFirstThunk;
+    };
+    uint32_t TimeDateStamp;
+    uint32_t ForwarderChain;
+    uint32_t Name;
+    uint32_t FirstThunk;
+} IMAGE_IMPORT_DESCRIPTOR;
+
+typedef void *HANDLE;
+#define INVALID_HANDLE_VALUE ((HANDLE) (int32_t)-1)
+#define STD_INPUT_HANDLE ((uint32_t) -10)
+#define STD_OUTPUT_HANDLE ((uint32_t) -11)
+#define STD_ERROR_HANDLE ((uint32_t) -12)
+
 
 //
 // generate a hexdump from a buffer of bytes
@@ -136,16 +167,57 @@ void hexdump (const uint8_t *buffer, size_t length)
 
 
 //
+// Windows API routines needed by the example program
+// They need to be defined with the __stdcall calling convention (callee removes
+// the arguments from the stack before returning) because that's the calling
+// convention of Windows API routines (called WINAPI).
+HANDLE __stdcall GetStdHandle(uint32_t nStdHandle)
+{
+    if (nStdHandle == STD_INPUT_HANDLE) {
+        return (HANDLE) 0;
+    }
+    else if (nStdHandle == STD_OUTPUT_HANDLE) {
+        return (HANDLE) 1;
+    }
+    else if (nStdHandle == STD_ERROR_HANDLE) {
+        return (HANDLE) 2;
+    }
+    else {
+        return INVALID_HANDLE_VALUE;
+    }
+}
+
+
+bool __stdcall WriteFile(HANDLE   hFile,
+               void     *lpBuffer,
+               uint32_t nNumberOfBytesToWrite,
+               uint32_t *lpNumberOfBytesWritten,
+               void     *lpOverlapped)
+{
+    ssize_t nbytes = write((int) hFile, lpBuffer, nNumberOfBytesToWrite);
+    if (nbytes == -1) {
+        *lpNumberOfBytesWritten = 0;
+        return false;
+    }
+    else {
+        *lpNumberOfBytesWritten = (uint32_t) nbytes;
+        return true;
+    }
+}
+
+
+//
 // main function
 //
 int main(int argc, char **argv)
 {
     int                  fd, n, prot;
     struct stat          sb;
-    void                 *baseptr;
+    void                 *filebase;
     IMAGE_DOS_HEADER     *doshdr;
     IMAGE_NT_HEADERS     *nthdrs;
     IMAGE_SECTION_HEADER *sechdr;
+    uint32_t             imgbase;
     int32_t              (*code)();
     void                 *data;
 
@@ -159,14 +231,14 @@ int main(int argc, char **argv)
         close(fd);
         return 1;
     }
-    if ((baseptr = mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0)) == MAP_FAILED) {
+    if ((filebase = mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0)) == MAP_FAILED) {
         perror("ERROR: could not memory-map file");
         close(fd);
         return 1;
     }
-    printf("executable mapped at address 0x%08x\n", (unsigned int) baseptr);
+    printf("executable mapped at address 0x%08x\n", (unsigned int) filebase);
     
-    doshdr = (IMAGE_DOS_HEADER *) baseptr;
+    doshdr = (IMAGE_DOS_HEADER *) filebase;
     printf("checking signature of DOS header... ");
     if (doshdr->e_magic == 0x5a4d) {
         printf("ok\n");
@@ -176,7 +248,7 @@ int main(int argc, char **argv)
         goto cleanup;
     }
     
-    nthdrs = (IMAGE_NT_HEADERS *) (((uint8_t *) baseptr) + doshdr->e_lfanew);
+    nthdrs = (IMAGE_NT_HEADERS *) (((uint8_t *) filebase) + doshdr->e_lfanew);
     printf("checking signature of NT headers... ");
     if (nthdrs->Signature == 0x00004550) {
         printf("ok\n");
@@ -187,13 +259,14 @@ int main(int argc, char **argv)
     }
     printf("number of sections: %d\n", nthdrs->FileHeader.NumberOfSections);
     printf("image base address: 0x%08x\n", nthdrs->OptionalHeader.ImageBase);
+    imgbase = nthdrs->OptionalHeader.ImageBase;
     
     printf("sections in executable:\n");
     for (sechdr = (IMAGE_SECTION_HEADER *) (((uint8_t *) nthdrs) + sizeof(IMAGE_NT_HEADERS)), n = 1;
         n <= nthdrs->FileHeader.NumberOfSections;
         ++sechdr, ++n) {
-        void     *secptr  = (void *) (sechdr->PointerToRawData + (uint8_t *) baseptr);
-        void     *secbase = (void *) (sechdr->VirtualAddress + nthdrs->OptionalHeader.ImageBase);
+        void     *secptr  = (void *) (sechdr->PointerToRawData + (uint8_t *) filebase);
+        void     *secbase = (void *) (sechdr->VirtualAddress + imgbase);
         uint32_t secsize  = sechdr->Misc.VirtualSize;
         
         printf("%.8s at %p, %d bytes large, will be mapped at %p\n",
@@ -220,7 +293,8 @@ int main(int argc, char **argv)
         // use lseek() either, because mmap() seems to ignore the current position.
         memcpy(secbase, secptr, secsize);
         
-        // set protection of mapped area depending on section name
+        // set protection of mapped area depending on section name and perform
+        // other section-specific actions
         if (strncmp((const char *) sechdr->Name, ".text", 8) == 0) {
             prot = PROT_READ | PROT_EXEC;
             code = (int32_t (*)()) secbase;
@@ -233,8 +307,34 @@ int main(int argc, char **argv)
             prot = PROT_READ;
         }
         else if (strncmp((const char *) sechdr->Name, ".idata", 8) == 0) {
-            // TODO: What is stored in this section?
             prot = PROT_READ | PROT_WRITE;
+            
+            // patch addresses of imported functions into the Import Address Table (IAT)
+            printf("imported functions:\n");
+            for (IMAGE_IMPORT_DESCRIPTOR *impdesc = (IMAGE_IMPORT_DESCRIPTOR *) secbase;
+                impdesc->FirstThunk != 0; ++impdesc) {
+                printf("%s\n", (uint8_t *) (impdesc->Name + imgbase));
+                for (IMAGE_IMPORT_BY_NAME **func = (IMAGE_IMPORT_BY_NAME **) (impdesc->FirstThunk + imgbase);
+                    *func != NULL; ++func) {
+                    if (strcmp((const char *) ((IMAGE_IMPORT_BY_NAME *) ((uint8_t *) *func + imgbase))->Name,
+                               "GetStdHandle") == 0) {
+                        printf("patching address of GetStdHandle (%p) into IAT at address %p\n",
+                               GetStdHandle, func);
+                        *func = (IMAGE_IMPORT_BY_NAME *) GetStdHandle;
+                    }
+                    else if (strcmp((const char *) ((IMAGE_IMPORT_BY_NAME *) ((uint8_t *) *func + imgbase))->Name,
+                               "WriteFile") == 0) {
+                        printf("patching address of WriteFile (%p) into IAT at address %p\n",
+                               WriteFile, func);
+                        *func = (IMAGE_IMPORT_BY_NAME *) WriteFile;
+                    }
+                    else {
+                        printf("function %s not implemented - aborting\n",
+                               ((IMAGE_IMPORT_BY_NAME *) ((uint8_t *) *func + imgbase))->Name);
+                        goto cleanup;
+                    }
+                }
+            }
         }
         if (mprotect(secbase, secsize, prot) == -1) {
             perror("cannot set protection of mapped area");
@@ -242,16 +342,13 @@ int main(int argc, char **argv)
         }
         
         // dump the first 16 bytes for inspection
-        hexdump((uint8_t *) secbase, 16);
+        hexdump((uint8_t *) secbase, 128);
     }
         
-    printf("string before program ran: %s\n", (char *) data);
     printf("exit code of program: %d\n", code());
-    printf("string after program ran: %s\n", (char *) data);
     
-//    while(getchar() != EOF);
 cleanup:
-    munmap(baseptr, sb.st_size);
+    munmap(filebase, sb.st_size);
     close(fd);
     return 0;
 }
