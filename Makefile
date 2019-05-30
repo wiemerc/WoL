@@ -1,24 +1,18 @@
-CXXFILES := $(wildcard *.cxx)
-OBJS     := $(patsubst %.cxx, %.o, $(CXXFILES))
-
-CXX      := clang++
-CXXFLAGS := -m32 -Wall -Wno-c++11-extensions -g
-LDFLAGS  := -arch i386
-LDLIBS   := 
+CC      := clang
+CFLAGS  := -m32 -Wall -g
+LDFLAGS := -arch i386
+LDLIBS  :=
 
 .PHONY: all clean examples
 
-all: winoux examples
+all: winonux examples
 
-winoux: $(OBJS)
-	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+winonux: winonux.c
 
 clean:
 	$(MAKE) --directory=examples clean
-	rm -f *.o winoux
+	rm -f *.o winonux
 
 examples:
 	$(MAKE) --directory=$@
 
-%.o: %.cxx
-	$(CXX) $(CXXFLAGS) -c $< -o $@
