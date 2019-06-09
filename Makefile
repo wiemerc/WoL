@@ -1,13 +1,11 @@
-CC      := clang
-CFLAGS  := -m32 -Wall -g
-LDFLAGS := -arch i386
-LDLIBS  :=
+CC      := gcc
+CFLAGS  := -Wall -g
 
 .PHONY: all clean examples
 
 all: winonux examples
 
-winonux: winonux.c
+winonux: winonux.c winonux.h
 
 clean:
 	$(MAKE) --directory=examples clean
