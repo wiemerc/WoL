@@ -115,7 +115,7 @@ typedef struct {
         uint32_t Function;
         uint32_t Ordinal;
         uint32_t AddressOfData;
-    } u1;
+    };
 } IMAGE_THUNK_DATA;
     
 typedef struct {
@@ -132,3 +132,9 @@ typedef struct {
 
 // some useful macros
 #define RVA_TO_PTR(rva) (((uint8_t *) rva) + imgbase)
+
+#define DEBUG 10
+#define INFO  20
+#define WARN  30
+#define ERROR 40
+#define CRIT  50

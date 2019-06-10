@@ -6,10 +6,14 @@
 
 
 #include <fcntl.h>
+#include <signal.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/errno.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -18,9 +22,29 @@
 
 
 //
+// log a message with severity
+//
+static void logmsg(int level, const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+ 
+    switch (level) {
+        case DEBUG: fputs("DEBUG: ", stdout); break;
+        case INFO:  fputs("INFO: ", stdout);  break;
+        case WARN:  fputs("WARN: ", stdout);  break;
+        case ERROR: fputs("ERROR: ", stdout); break;
+        case CRIT:  fputs("CRIT: ", stdout);  break;
+    }
+    vprintf(fmt, args);
+    fputs("\n", stdout);
+}
+
+
+//
 // generate a hexdump from a buffer of bytes
 //
-void hexdump (const uint8_t *buffer, size_t length)
+static void hexdump(const uint8_t *buffer, size_t length)
 {
     size_t pos = 0;
     while (pos < length) {
@@ -49,101 +73,136 @@ void hexdump (const uint8_t *buffer, size_t length)
 
 
 //
-// main function
+// signal handler for SIGSEGV
 //
-int main(int argc, char **argv)
+static void sigsegv(int signum)
 {
-    int                  fd, n, prot;
-    struct stat          sb;
-    void                 *filebase;
-    IMAGE_DOS_HEADER     *doshdr;
-    IMAGE_NT_HEADERS     *nthdrs;
-    IMAGE_SECTION_HEADER *sechdr;
-    uint32_t             imgbase;
-    int32_t              (*code)();
-    void                 *data;
+    logmsg(CRIT, "segmentation fault occurred, probably due to an ill-formed program image");
+    exit(1);
+}
 
-    // map whole executable into memory
-    if ((fd = open(argv[1], O_RDONLY)) == -1) {
-        perror("ERROR: could not open file");
-        return 1;
+
+//
+// load recursively the program image and the images of all imported DLLs
+//
+// returns 0 if successful, -1 otherwise. If successful, *entry_point is set to 
+// the start address of the .text segment (where the program begins execution).
+//
+static int load_image(const char *fname, void **entry_point)
+{
+    int                  fd;                // file descriptor
+    struct stat          sb;                // buffer for fstat
+    void                 *sof, *eof;        // start-of-file and end-of-file pointers
+    IMAGE_DOS_HEADER     *doshdr;           // pointer to DOS header
+    IMAGE_NT_HEADERS     *nthdrs;           // pointer to NT headers
+    IMAGE_SECTION_HEADER *sechdr;           // pointer to image section headers
+    int                  nsec;              // number of section
+    uint32_t             imgbase;           // virtual base address of image
+
+
+    // map whole image into memory
+    logmsg(INFO, "mapping file '%s' into memory...", fname);
+    if ((fd = open(fname, O_RDONLY)) == -1) {
+        logmsg(ERROR, "could not open file: %s", strerror(errno));
+        return -1;
     }
     if (fstat(fd, &sb) == -1) {
-        perror("ERROR: could not get file status");
-        close(fd);
-        return 1;
+        logmsg(ERROR, "could not get file status: %s", strerror(errno));
+        return -1;
     }
-    if ((filebase = mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0)) == MAP_FAILED) {
-        perror("ERROR: could not memory-map file");
-        close(fd);
-        return 1;
+    if ((sof = mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0)) == MAP_FAILED) {
+        logmsg(ERROR, "could not memory-map file: %s", strerror(errno));
+        return -1;
     }
-    printf("executable mapped at address 0x%08x\n", (unsigned int) filebase);
+    eof = ((uint8_t *) sof) + sb.st_size;
+    logmsg(DEBUG, "image mapped at address %p", sof);
     
-    doshdr = (IMAGE_DOS_HEADER *) filebase;
-    printf("checking signature of DOS header... ");
-    if (doshdr->e_magic == 0x5a4d) {
-        printf("ok\n");
+
+    // check DOS header
+    if ((((uint8_t *) sof) + sizeof(IMAGE_DOS_HEADER)) >= eof) {
+        logmsg(ERROR, "image does not contain complete DOS header");
+        return -1;
     }
-    else {
-        printf("not ok - aborting\n");
-        goto cleanup;
+    doshdr = (IMAGE_DOS_HEADER *) sof;
+    if (doshdr->e_magic != 0x5a4d) {
+        logmsg(ERROR, "signature of DOS header incorrect");
+        return -1;
     }
-    
-    nthdrs = (IMAGE_NT_HEADERS *) (((uint8_t *) filebase) + doshdr->e_lfanew);
-    printf("checking signature of NT headers... ");
-    if (nthdrs->Signature == 0x00004550) {
-        printf("ok\n");
+    nthdrs = (IMAGE_NT_HEADERS *) (((uint8_t *) sof) + doshdr->e_lfanew);
+
+
+    // check NT headers
+    if ((nthdrs < sof) || (nthdrs >= eof)) {
+        logmsg(ERROR, "pointer to NT headers incorrect");
+        return -1;
     }
-    else {
-        printf("not ok - aborting\n");
-        goto cleanup;
+    if ((((uint8_t *) nthdrs) + sizeof(IMAGE_NT_HEADERS)) >= eof) {
+        logmsg(ERROR, "image does not contain complete NT headers");
+        return -1;
     }
-    printf("number of sections: %d\n", nthdrs->FileHeader.NumberOfSections);
-    printf("image base address: 0x%08x\n", nthdrs->OptionalHeader.ImageBase);
+    if (nthdrs->Signature != 0x00004550) {
+        logmsg(ERROR, "signature of NT headers incorrect");
+        return -1;
+    }
+    logmsg(DEBUG, "number of sections: %d", nthdrs->FileHeader.NumberOfSections);
+    logmsg(DEBUG, "image base address: 0x%08x", nthdrs->OptionalHeader.ImageBase);
     imgbase = nthdrs->OptionalHeader.ImageBase;
     
-    printf("sections in executable:\n");
-    for (sechdr = (IMAGE_SECTION_HEADER *) (((uint8_t *) nthdrs) + sizeof(IMAGE_NT_HEADERS)), n = 1;
-        n <= nthdrs->FileHeader.NumberOfSections;
-        ++sechdr, ++n) {
-        void     *secptr  = (void *) (sechdr->PointerToRawData + (uint8_t *) filebase);
+
+    // load individual sections and process them
+    logmsg(INFO, "loading sections...");
+    sechdr = (IMAGE_SECTION_HEADER *) (((uint8_t *) nthdrs) + sizeof(IMAGE_NT_HEADERS));
+    nsec = 1;
+    while (nsec <= nthdrs->FileHeader.NumberOfSections) {
+        if ((sechdr < sof) || (sechdr >= eof)) {
+            logmsg(ERROR, "pointer to section header incorrect");
+            return -1;
+        }
+        // TODO: check if section header is complete
+        void     *secptr  = (void *) (sechdr->PointerToRawData + (uint8_t *) sof);
         void     *secbase = (void *) (sechdr->VirtualAddress + imgbase);
         uint32_t secsize  = sechdr->Misc.VirtualSize;
+        if ((secptr < sof) || (secptr >= eof)) {
+            logmsg(ERROR, "pointer to section incorrect");
+            return -1;
+        }
+        // TODO: check if section is complete
         
-        printf("%.8s at %p, %d bytes large, will be mapped at %p\n",
+        logmsg(DEBUG, "section %.8s at %p, %d bytes large, will be mapped at 0x%08x",
                sechdr->Name,
                secptr,
                secsize,
-               secbase);
+               secbase
+        );
         
         // create anonymous mapping at the corresponding address,
         // writeable so we can copy the data (see below)
         if (mmap(secbase,
                  secsize,
                  PROT_WRITE,
-                 MAP_ANON | MAP_SHARED | MAP_FIXED,
+                 MAP_ANON | MAP_PRIVATE | MAP_FIXED,
                  -1,
-                 0) == MAP_FAILED) {
-            perror("could not create anonymous mapping");
-            goto cleanup;
+                 0
+            ) == MAP_FAILED) {
+            logmsg(ERROR, "could not create anonymous mapping: %s", strerror(errno));
+            return -1;
         }
         
         // copy section data to the mapped area
-        // We copy the data because the offset is (normally) not a multiple
+        // We copy the data because the offset in the image is (normally) not a multiple
         // of the page size, so we can't use it in the mmap() call. We can't
-        // use lseek() either, because mmap() seems to ignore the current position.
+        // use lseek() either, because mmap() seems to ignore the current file position.
         memcpy(secbase, secptr, secsize);
         
         // set protection of mapped area depending on section name and perform
         // other section-specific actions
+        int prot = 0;
         if (strncmp((const char *) sechdr->Name, ".text", 8) == 0) {
             prot = PROT_READ | PROT_EXEC;
-            code = (int32_t (*)()) secbase;
+            *entry_point = secbase;
         }
         else if (strncmp((const char *) sechdr->Name, ".data", 8) == 0) {
             prot = PROT_READ | PROT_WRITE;
-            data = secbase;
         }
         else if (strncmp((const char *) sechdr->Name, ".rdata", 8) == 0) {
             prot = PROT_READ;
@@ -152,45 +211,63 @@ int main(int argc, char **argv)
             prot = PROT_READ | PROT_WRITE;
             
             // patch addresses of imported functions into the Import Address Table (IAT)
-            printf("imported functions:\n");
-            for (IMAGE_IMPORT_DESCRIPTOR *impdesc = (IMAGE_IMPORT_DESCRIPTOR *) secbase;
-                impdesc->FirstThunk != 0; ++impdesc) {
-                printf("%s\n", RVA_TO_PTR(impdesc->Name));
-                for (IMAGE_IMPORT_BY_NAME **func = (IMAGE_IMPORT_BY_NAME **) RVA_TO_PTR(impdesc->FirstThunk);
-                    *func != NULL; ++func) {
-                    if (strcmp((const char *) ((IMAGE_IMPORT_BY_NAME *) RVA_TO_PTR(*func))->Name,
-                               "GetStdHandle") == 0) {
-                        printf("patching address of GetStdHandle (%p) into IAT at address %p\n",
-                               GetStdHandle, func);
-                        *func = (IMAGE_IMPORT_BY_NAME *) GetStdHandle;
-                    }
-                    else if (strcmp((const char *) ((IMAGE_IMPORT_BY_NAME *) ((uint8_t *) *func + imgbase))->Name,
-                               "WriteFile") == 0) {
-                        printf("patching address of WriteFile (%p) into IAT at address %p\n",
-                               WriteFile, func);
-                        *func = (IMAGE_IMPORT_BY_NAME *) WriteFile;
-                    }
-                    else {
-                        printf("function %s not implemented - aborting\n",
-                               ((IMAGE_IMPORT_BY_NAME *) ((uint8_t *) *func + imgbase))->Name);
-                        goto cleanup;
-                    }
+            IMAGE_IMPORT_DESCRIPTOR *impdesc = (IMAGE_IMPORT_DESCRIPTOR *) secbase;
+            while (impdesc->FirstThunk != 0) {
+                logmsg(DEBUG, "functions imported from %s:", RVA_TO_PTR(impdesc->Name));
+                IMAGE_THUNK_DATA *thunk = (IMAGE_THUNK_DATA *) RVA_TO_PTR(impdesc->FirstThunk);
+                while (thunk->AddressOfData != 0) {
+                    IMAGE_IMPORT_BY_NAME *func = (IMAGE_IMPORT_BY_NAME *) RVA_TO_PTR(thunk->AddressOfData); 
+                    logmsg(DEBUG, "%s (%d)", func->Name, func->Hint);
+                    ++thunk;
                 }
+                ++impdesc;
             }
         }
+
         if (mprotect(secbase, secsize, prot) == -1) {
-            perror("cannot set protection of mapped area");
-            goto cleanup;
+            logmsg(ERROR, "cannot set protection of mapped area: %s", strerror(errno));
+            return -1;
         }
         
-        // dump the first 16 bytes for inspection
+        // dump the first 128 bytes for inspection
         hexdump((uint8_t *) secbase, 128);
+
+        // move to next section
+        ++sechdr;
+        ++nsec;
     }
-        
-    printf("exit code of program: %d\n", code());
-    
-cleanup:
-    munmap(filebase, sb.st_size);
-    close(fd);
+    return 0;
+}
+
+
+//
+// main function
+//
+int main(int argc, char **argv)
+{
+    struct sigaction     act;
+    int32_t              (*entry_point)();
+
+    // install signal handler for SIGSEGV
+    act.sa_handler = sigsegv;
+    act.sa_flags   = 0;
+    sigemptyset(&act.sa_mask);
+    if (sigaction(SIGSEGV, &act, NULL) == -1) {
+        logmsg(CRIT, "failed to install signal handler: %s", strerror(errno));
+        return -1;
+    }
+
+    // load program
+    if (load_image(argv[1], &entry_point) == -1) {
+        logmsg(ERROR, "failed to load image");
+        return 1;
+    }
+    logmsg(INFO, "loaded program successfully, entry point = %p", entry_point);
+
+    // run program
+    #if 0
+    logmsg(INFO, "running program...");
+    logmsg(INFO, "exit code = %d", entry_point());
+    #endif
     return 0;
 }
