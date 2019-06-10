@@ -8,7 +8,7 @@ Gute Beschreibung des PE-Formats: _Peering Inside the PE_ und die offizielle PE-
 
 PE wurde so entworfen, dass das ganze Executable am Stück in den Speicher geladen werden kann (mit Memory-mapped IO) => `mmap` unter Unix
 
-Es wird davon ausgegangen, dass das Executable immer an der gleichen Adresse (0x00400000) geladen wird, deswegen gibt es keine Relocation-Informationen => Flag `MAP_FIXED`. `mmap` mit `MAP_FIXED` funktioniert nur mit 32-Bit Executables (Option `-m32`) bzw. Prozessen. Bei 64-Bit-Prozessen sind unter macOS die unteren 4GB des Adressraums für den Kernel reserviert.
+Es wird davon ausgegangen, dass das Executable immer an der gleichen Adresse (0x00400000) geladen wird, deswegen gibt es keine Relocation-Informationen => Flag `MAP_FIXED`. `mmap` mit `MAP_FIXED` funktioniert nur mit 32-Bit Executables (Option `-m32`) bzw. Prozessen. Bei 64-Bit-Prozessen sind unter macOS die unteren 4GB des Adressraums für den Kernel reserviert. Bei 64-Bit-Prozessen unter Linux ist die Adresse 0x00400000 frei, sie wird standardmässig auch von ELF Executables verwendet. Damit sie für das Windows-Programm verwendet werden kann muss man allerdings beim Linken von WINONUX andere Startadressen für die Segmente angeben (zumindest für das Text-Segment).
 
 
 ### Speicherlayout 32 / 64 Bit
