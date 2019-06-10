@@ -15,3 +15,5 @@ clean:
 examples:
 	$(MAKE) --directory=$@
 
+history:
+	git log --format="format:%h %ci %s"
