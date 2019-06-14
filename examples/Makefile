@@ -17,4 +17,4 @@ winhello.exe: cwcrt0.o winhello.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 kernel32.dll: kernel32.c kernel32.h
-	$(CC) -shared -o kernel32.dll kernel32.c
+	$(CC) -shared $(LDFLAGS) -o kernel32.dll kernel32.c

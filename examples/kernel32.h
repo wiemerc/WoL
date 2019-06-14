@@ -14,5 +14,6 @@ typedef void *HANDLE;
 
 
 // function declarations
+void entry();
 HANDLE __declspec(dllexport) __stdcall GetStdHandle(uint32_t);
 bool __declspec(dllexport) __stdcall WriteFile(HANDLE, void *, uint32_t , uint32_t *, void *);
