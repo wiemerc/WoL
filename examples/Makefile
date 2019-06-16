@@ -5,16 +5,13 @@ LDLIBS  := -lkernel32
 
 .PHONY: all clean
 
-all: strtoupper.exe winhello.exe kernel32.dll
+all: strtoupper.exe winhello.exe
 
 clean:
-	rm -f *.o *.exe *.dll
+	rm -f *.o *.exe
 
 strtoupper.exe: strtoupper.o
 	$(CC) $(LDFLAGS) -o $@ $^
 
 winhello.exe: cwcrt0.o winhello.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
-
-kernel32.dll: kernel32.c kernel32.h
-	$(CC) -shared $(LDFLAGS) -o kernel32.dll kernel32.c

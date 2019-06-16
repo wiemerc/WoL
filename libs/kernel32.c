@@ -54,7 +54,7 @@ bool __stdcall WriteFile(
     // (1) the standard library on Windows (msvcrt.dll), which MinGW links against, doesn't
     //     provide this stub of course and
     // (2) it itself (or the startup code that comes with it) uses several (actually a
-    //     whopping 20) functions from the real KERNEL32.dll.
+    //     whopping 20) functions from the real KERNEL32.DLL.
     // So we put the arguments into the right registers and use the native system call
     // interface (INT 0x80) instead. The return value is placed in EAX, which we need
     // to move to the local variable (located on the stack) nbytes_written afterwards.
