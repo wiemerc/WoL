@@ -5,6 +5,7 @@
 //
 
 
+#include <ctype.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -31,44 +32,13 @@ static void logmsg(int level, const char *fmt, ...)
  
     switch (level) {
         case DEBUG: fputs("DEBUG: ", stdout); break;
-        case INFO:  fputs("INFO: ", stdout);  break;
-        case WARN:  fputs("WARN: ", stdout);  break;
+        case INFO:  fputs("INFO:  ", stdout);  break;
+        case WARN:  fputs("WARN:  ", stdout);  break;
         case ERROR: fputs("ERROR: ", stdout); break;
-        case CRIT:  fputs("CRIT: ", stdout);  break;
+        case CRIT:  fputs("CRIT:  ", stdout);  break;
     }
     vprintf(fmt, args);
     fputs("\n", stdout);
-}
-
-
-//
-// generate a hexdump from a buffer of bytes
-//
-static void hexdump(const uint8_t *buffer, size_t length)
-{
-    size_t pos = 0;
-    while (pos < length) {
-        printf("%04lx: ", pos);
-        char line[256], *p;
-        size_t i, nchars;
-        for (i = pos, p = line, nchars = 0; (i < pos + 16) && (i < length); ++i, ++p, ++nchars) {
-            printf("%02x ", buffer[i]);
-            if (buffer[i] >= 0x20 && buffer[i] <= 0x7e) {
-                snprintf(p, 256 - nchars, "%c", buffer[i]);
-            }
-            else {
-                snprintf(p, 256 - nchars, ".");
-            }
-        }
-        if (nchars < 16) {
-            for (size_t i = 1; i <= (3 * (16 - nchars)); ++i, ++p, ++nchars) {
-                snprintf(p, 256 - nchars, " ");
-            }
-        }
-
-        printf("\t%s\n", line);
-        pos += 16;
-    }
 }
 
 
@@ -83,12 +53,39 @@ static void sigsegv(int signum)
 
 
 //
+// get function by name in list of functions exported by a DLL
+//
+// return: pointer to the function if successful, NULL otherwise
+//
+static void *get_func_by_name(
+    const char      *fname,                 // name of function to find
+    uint32_t        dllbase,                // base address of DLL these functions are imported from
+    const uint32_t  *func_names,            // pointer to AddressOfNames in the .edata segment of the DLL
+    const uint32_t  *func_ptrs,             // pointer to AddressOfFunctions in the .edata segment of the DLL
+    uint32_t        nfuncs                  // number of function name / pointer pairs
+)
+{
+    for (uint32_t i = 0; i < nfuncs; ++i) {
+        if (strcmp(fname, RVA_TO_PTR(dllbase, func_names[i])) == 0)
+            return RVA_TO_PTR(dllbase, func_ptrs[i]);
+    }
+    return NULL;
+}
+
+
+//
 // load recursively the program image and the images of all imported DLLs
 //
-// returns 0 if successful, -1 otherwise. If successful, *entry_point is set to 
-// the start address of the .text segment (where the program begins execution).
+// returns: 0 if successful, -1 otherwise
 //
-static int load_image(const char *fname, void **entry_point)
+static int load_image(
+    const char *fname,                      // name of the image file (executable or DLL)
+    uint32_t *out_imgbase,                  // will be set to the image base address
+    int32_t (**entry_point)(),              // if not NULL, *entry_point will be set to start address of the .text segment
+    uint32_t **func_names,                  // if not NULL, *func_names will be set to AddressOfNames in the .edata segment
+    uint32_t **func_ptrs,                   // if not NULL, *func_ptrs will be set to AddressOfFunctions in the .edata segment
+    uint32_t *nfuncs                        // if not NULL, *nfuncs will be set to the number of exported functions
+)
 {
     int                  fd;                // file descriptor
     struct stat          sb;                // buffer for fstat
@@ -101,7 +98,7 @@ static int load_image(const char *fname, void **entry_point)
 
 
     // map whole image into memory
-    logmsg(INFO, "mapping file '%s' into memory...", fname);
+    logmsg(INFO, "mapping file %s into memory", fname);
     if ((fd = open(fname, O_RDONLY)) == -1) {
         logmsg(ERROR, "could not open file: %s", strerror(errno));
         return -1;
@@ -146,11 +143,11 @@ static int load_image(const char *fname, void **entry_point)
     }
     logmsg(DEBUG, "number of sections: %d", nthdrs->FileHeader.NumberOfSections);
     logmsg(DEBUG, "image base address: 0x%08x", nthdrs->OptionalHeader.ImageBase);
-    imgbase = nthdrs->OptionalHeader.ImageBase;
+    imgbase = *out_imgbase = nthdrs->OptionalHeader.ImageBase;
     
 
     // load individual sections and process them
-    logmsg(INFO, "loading sections...");
+    logmsg(INFO, "loading sections");
     sechdr = (IMAGE_SECTION_HEADER *) (((uint8_t *) nthdrs) + sizeof(IMAGE_NT_HEADERS));
     nsec = 1;
     while (nsec <= nthdrs->FileHeader.NumberOfSections) {
@@ -161,29 +158,33 @@ static int load_image(const char *fname, void **entry_point)
         // TODO: check if section header is complete
         void     *secptr  = (void *) (sechdr->PointerToRawData + (uint8_t *) sof);
         void     *secbase = (void *) (sechdr->VirtualAddress + imgbase);
-        uint32_t secsize  = sechdr->Misc.VirtualSize;
+        // VirtualSize is the size of the section mapped into the virtual address space of the process,
+        // SizeOfRawData is the amount of space the section occupies on disk. It can be larger than the
+        // virtual size because of the alignment of the sections in the image (on 512-byte boundaries in
+        // images created with MinGW) or it can be 0 in case of uninitialized data (section .bss).
+        uint32_t secsize      = sechdr->VirtualSize;
+        uint32_t size_on_disk = sechdr->SizeOfRawData;
         if ((secptr < sof) || (secptr >= eof)) {
             logmsg(ERROR, "pointer to section incorrect");
             return -1;
         }
         // TODO: check if section is complete
         
-        logmsg(DEBUG, "section %.8s at %p, %d bytes large, will be mapped at 0x%08x",
-               sechdr->Name,
-               secptr,
-               secsize,
-               secbase
+        logmsg(
+            DEBUG,
+            "section %.8s at offset 0x%08x, %d / %d (virtual / on disk) bytes large, will be mapped at 0x%08x",
+            sechdr->Name,
+            secptr,
+            secsize,
+            size_on_disk,
+            secbase
         );
         
         // create anonymous mapping at the corresponding address,
         // writeable so we can copy the data (see below)
-        if (mmap(secbase,
-                 secsize,
-                 PROT_WRITE,
-                 MAP_ANON | MAP_PRIVATE | MAP_FIXED,
-                 -1,
-                 0
-            ) == MAP_FAILED) {
+        // TODO: Can the actual mapping be larger than specified because only whole pages get mapped?
+        //       How do we make sure in this case that consecutive sections don't overlap?
+        if (mmap(secbase, secsize, PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) {
             logmsg(ERROR, "could not create anonymous mapping: %s", strerror(errno));
             return -1;
         }
@@ -192,16 +193,21 @@ static int load_image(const char *fname, void **entry_point)
         // We copy the data because the offset in the image is (normally) not a multiple
         // of the page size, so we can't use it in the mmap() call. We can't
         // use lseek() either, because mmap() seems to ignore the current file position.
-        memcpy(secbase, secptr, secsize);
+        // We check if there is actually data to copy but only copy the real, not any
+        // padded bytes.
+        if (size_on_disk > 0)
+            memcpy(secbase, secptr, secsize);
         
-        // set protection of mapped area depending on section name and perform
-        // other section-specific actions
+        // set protection of mapped area depending on section name
+        // and perform other section-specific actions
         int prot = 0;
         if (strncmp((const char *) sechdr->Name, ".text", 8) == 0) {
             prot = PROT_READ | PROT_EXEC;
-            *entry_point = secbase;
+            if (entry_point)
+                *entry_point = secbase;
         }
-        else if (strncmp((const char *) sechdr->Name, ".data", 8) == 0) {
+        else if ((strncmp((const char *) sechdr->Name, ".data", 8) == 0) || 
+                 (strncmp((const char *) sechdr->Name, ".bss", 8) == 0)) {
             prot = PROT_READ | PROT_WRITE;
         }
         else if (strncmp((const char *) sechdr->Name, ".rdata", 8) == 0) {
@@ -213,16 +219,68 @@ static int load_image(const char *fname, void **entry_point)
             // patch addresses of imported functions into the Import Address Table (IAT)
             IMAGE_IMPORT_DESCRIPTOR *impdesc = (IMAGE_IMPORT_DESCRIPTOR *) secbase;
             while (impdesc->FirstThunk != 0) {
-                logmsg(DEBUG, "functions imported from %s:", RVA_TO_PTR(impdesc->Name));
-                IMAGE_THUNK_DATA *thunk = (IMAGE_THUNK_DATA *) RVA_TO_PTR(impdesc->FirstThunk);
+                char *fname = RVA_TO_PTR(imgbase, impdesc->Name);
+                char *p = fname;
+                while ((*p = tolower(*p)))
+                    ++p;
+                
+                // load specified DLL, all DLLs are located in the libs/ subdirectory
+                char libname[MAX_PATH_LEN];
+                strncpy(libname, "libs/", MAX_PATH_LEN - 1);
+                strncat(libname, fname, MAX_PATH_LEN - 1 - strlen("libs/"));
+                uint32_t dllbase;
+                uint32_t *fnames;
+                uint32_t *fptrs;
+                uint32_t nfuncs;
+                logmsg(INFO, "loading DLL %s used by this image", fname);
+                if (load_image(libname, &dllbase, NULL, &fnames, &fptrs, &nfuncs) == -1) {
+                    logmsg(ERROR, "failed to load DLL %s");
+                    return -1;
+                }
+
+                logmsg(INFO, "patching addresses of imported functions into the Import Address Table (IAT)");
+                IMAGE_THUNK_DATA *thunk = (IMAGE_THUNK_DATA *) RVA_TO_PTR(imgbase, impdesc->FirstThunk);
+                void *faddr;
+                // A thunk is just a 32-bit value than can mean different things (implemented as a C union).
+                // Before patching is is (usually) an RVA pointing to an IMAGE_IMPORT_BY_NAME structure (the 
+                // AddressOfData field). When the function described by this structure is found in the imported
+                // DLL, this RVA get replaced by a (32-bit) pointer to the function itself (the Function field).
                 while (thunk->AddressOfData != 0) {
-                    IMAGE_IMPORT_BY_NAME *func = (IMAGE_IMPORT_BY_NAME *) RVA_TO_PTR(thunk->AddressOfData); 
-                    logmsg(DEBUG, "%s (%d)", func->Name, func->Hint);
+                    IMAGE_IMPORT_BY_NAME *func = (IMAGE_IMPORT_BY_NAME *) RVA_TO_PTR(imgbase, thunk->AddressOfData); 
+                    if ((faddr = get_func_by_name(func->Name, dllbase, fnames, fptrs, nfuncs)) != NULL) {
+                        thunk->Function = (uint32_t) faddr;
+                        logmsg(DEBUG, "patched function %s with address %p", func->Name, faddr);
+                    }
+                    else {
+                        logmsg(ERROR, "function %s not found in DLL %s", func->Name, fname);
+                        return -1;
+                    }
                     ++thunk;
                 }
                 ++impdesc;
             }
         }
+        else if (strncmp((const char *) sechdr->Name, ".edata", 8) == 0) {
+            prot = PROT_READ | PROT_WRITE;
+
+            logmsg(DEBUG, "functions exported by this DLL:");
+            IMAGE_EXPORT_DIRECTORY *expdir = (IMAGE_EXPORT_DIRECTORY *) secbase;
+            // AddressOfNames and AddressOfFunctions are arrays of *RVAs*, not pointers (4 bytes vs. 8 bytes on a 64-bit architecture)
+            uint32_t *fnames = (uint32_t *) RVA_TO_PTR(imgbase, expdir->AddressOfNames);
+            uint32_t *fptrs  = (uint32_t *) RVA_TO_PTR(imgbase, expdir->AddressOfFunctions);
+            if (func_names && func_ptrs && nfuncs) {
+                *func_names = fnames;
+                *func_ptrs  = fptrs;
+                *nfuncs     = expdir->NumberOfNames;
+            }
+            for (uint32_t i = 0; i < expdir->NumberOfNames; ++i) {
+                char *fname = RVA_TO_PTR(imgbase, fnames[i]);
+                // remove trailing '@' and (ordinal?) number
+                fname = strsep(&fname, "@");
+                logmsg(DEBUG, "%s at address %p", fname, RVA_TO_PTR(imgbase, fptrs[i]));
+            }
+        }
+            
 
         if (mprotect(secbase, secsize, prot) == -1) {
             logmsg(ERROR, "cannot set protection of mapped area: %s", strerror(errno));
@@ -230,7 +288,7 @@ static int load_image(const char *fname, void **entry_point)
         }
         
         // dump the first 128 bytes for inspection
-        hexdump((uint8_t *) secbase, 128);
+//        hexdump((uint8_t *) secbase, 128);
 
         // move to next section
         ++sechdr;
@@ -246,7 +304,8 @@ static int load_image(const char *fname, void **entry_point)
 int main(int argc, char **argv)
 {
     struct sigaction     act;
-    int32_t              (*entry_point)();
+    uint32_t             imgbase;
+    int32_t              (*entry_point)(), status;
 
     // install signal handler for SIGSEGV
     act.sa_handler = sigsegv;
@@ -258,16 +317,20 @@ int main(int argc, char **argv)
     }
 
     // load program
-    if (load_image(argv[1], &entry_point) == -1) {
-        logmsg(ERROR, "failed to load image");
+    logmsg(INFO, "loading program %s", argv[1]);
+    if (load_image(argv[1], &imgbase, &entry_point, NULL, NULL, NULL) == -1) {
+        logmsg(ERROR, "failed to load program");
         return 1;
     }
     logmsg(INFO, "loaded program successfully, entry point = %p", entry_point);
 
     // run program
-    #if 0
+    // TODO: build program as 64-bit executable and switch to 32-bit mode before calling
+    //       the entry point, as described here: https://stackoverflow.com/a/32384358
     logmsg(INFO, "running program...");
-    logmsg(INFO, "exit code = %d", entry_point());
-    #endif
+    fputs("\n>>>>>>>>>>>>\n", stdout);
+    status = entry_point();
+    fputs("<<<<<<<<<<<<\n\n", stdout);
+    logmsg(INFO, "exit code = %d", status);
     return 0;
 }

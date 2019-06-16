@@ -93,7 +93,7 @@ typedef struct {
     union {
         uint32_t PhysicalAddress;
         uint32_t VirtualSize;
-    } Misc;
+    };
     uint32_t VirtualAddress;
     uint32_t SizeOfRawData;
     uint32_t PointerToRawData;
@@ -129,12 +129,28 @@ typedef struct {
     uint32_t FirstThunk;
 } IMAGE_IMPORT_DESCRIPTOR;
 
+typedef struct {
+    uint32_t Characteristics;
+    uint32_t TimeDateStamp;
+    uint16_t MajorVersion;
+    uint16_t MinorVersion;
+    uint32_t Name;
+    uint32_t Base;
+    uint32_t NumberOfFunctions;
+    uint32_t NumberOfNames;
+    uint32_t AddressOfFunctions;
+    uint32_t AddressOfNames;
+    uint32_t AddressOfNameOrdinals;
+} IMAGE_EXPORT_DIRECTORY;
+
 
 // some useful macros
-#define RVA_TO_PTR(rva) (((uint8_t *) rva) + imgbase)
+#define RVA_TO_PTR(imgbase, rva) ((void *) ((uint8_t *) rva) + imgbase)
 
 #define DEBUG 10
 #define INFO  20
 #define WARN  30
 #define ERROR 40
 #define CRIT  50
+
+#define MAX_PATH_LEN 256
