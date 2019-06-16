@@ -11,6 +11,6 @@ int cwmain()
     HANDLE hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD  nOut;
 
-    WriteFile(hStdOut, "hello, windows\r\n", 16, &nOut, NULL);
+    WriteFile(hStdOut, "Hello, Windows\r\n", 16, &nOut, NULL);
     return 0;
 }
