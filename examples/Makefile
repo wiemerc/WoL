@@ -13,5 +13,5 @@ clean:
 strtoupper.exe: strtoupper.o
 	$(CC) $(LDFLAGS) -o $@ $^
 
-winhello.exe: cwcrt0.o winhello.o
+winhello.exe: winhello.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
