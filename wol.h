@@ -1,5 +1,5 @@
 //
-// WINONUX - run simple Windows programs on Unix (Linux and macOS)
+// WoL - run simple Windows programs on Linux
 //
 // Copyright(C) 2017-2019 Constantin Wiemer
 //

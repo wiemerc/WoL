@@ -3,15 +3,15 @@ CFLAGS  := -std=c99 -m32 -D_DEFAULT_SOURCE -Wall -Wno-int-to-pointer-cast -Wno-c
 
 .PHONY: all clean libs examples
 
-all: winonux libs examples
+all: wol libs examples
 
-winonux: winonux.c winonux.h
-	$(CC) $(CFLAGS) winonux.c -o winonux
+wol: wol.c wol.h
+	$(CC) $(CFLAGS) wol.c -o wol
 
 clean:
 	$(MAKE) --directory=libs clean
 	$(MAKE) --directory=examples clean
-	rm -f *.o winonux
+	rm -f *.o wol
 
 libs:
 	$(MAKE) --directory=$@
