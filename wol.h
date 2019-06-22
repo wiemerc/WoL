@@ -89,7 +89,7 @@ typedef struct {
 } IMAGE_NT_HEADERS;
     
 typedef struct {
-    uint8_t Name[8];
+    char Name[8];
     union {
         uint32_t PhysicalAddress;
         uint32_t VirtualSize;
@@ -106,7 +106,7 @@ typedef struct {
 
 typedef struct {
     uint16_t Hint;
-    uint8_t Name[1];
+    char Name[1];
 } IMAGE_IMPORT_BY_NAME;
     
 typedef struct {
@@ -142,6 +142,9 @@ typedef struct {
     uint32_t AddressOfNames;
     uint32_t AddressOfNameOrdinals;
 } IMAGE_EXPORT_DIRECTORY;
+
+#define IMAGE_DIRECTORY_ENTRY_EXPORT 0
+#define IMAGE_DIRECTORY_ENTRY_IMPORT 1
 
 
 // some useful macros

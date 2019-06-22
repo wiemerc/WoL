@@ -47,7 +47,7 @@ static void logmsg(int level, const char *fmt, ...)
 //
 static void sigsegv(int signum)
 {
-    logmsg(CRIT, "segmentation fault occurred, probably due to an ill-formed program image");
+    logmsg(CRIT, "segmentation fault occurred while loading program image");
     exit(1);
 }
 
@@ -146,7 +146,11 @@ static int load_image(
     imgbase = *out_imgbase = nthdrs->OptionalHeader.ImageBase;
     
 
-    // load individual sections and process them
+    // load individual sections
+    // We just load the sections here and access the export and import tables via the data directory
+    // later. This is the correct approach because while MinGW puts these tables into their own
+    // .edata and .idata sections, which means we wouldn't need to lookup these tables in the
+    // data directory, the Microsoft compiler / linker (MSVC) does not.
     logmsg(INFO, "loading sections");
     sechdr = (IMAGE_SECTION_HEADER *) (((uint8_t *) nthdrs) + sizeof(IMAGE_NT_HEADERS));
     nsec = 1;
@@ -199,7 +203,6 @@ static int load_image(
             memcpy(secbase, secptr, secsize);
         
         // set protection of mapped area depending on section name
-        // and perform other section-specific actions
         int prot = 0;
         if (strncmp((const char *) sechdr->Name, ".text", 8) == 0) {
             prot = PROT_READ | PROT_EXEC;
@@ -211,89 +214,97 @@ static int load_image(
             prot = PROT_READ | PROT_WRITE;
         }
         else if (strncmp((const char *) sechdr->Name, ".rdata", 8) == 0) {
-            prot = PROT_READ;
+            // MSVC for some reason puts the IAT in the .rdata section. This means we need
+            // to make the section writable although it is meant to contain read-only data.
+            prot = PROT_READ | PROT_WRITE;
         }
         else if (strncmp((const char *) sechdr->Name, ".idata", 8) == 0) {
+            // needs to be writable because we patch the IAT
             prot = PROT_READ | PROT_WRITE;
             
-            // patch addresses of imported functions into the Import Address Table (IAT)
-            IMAGE_IMPORT_DESCRIPTOR *impdesc = (IMAGE_IMPORT_DESCRIPTOR *) secbase;
-            while (impdesc->FirstThunk != 0) {
-                char *fname = RVA_TO_PTR(imgbase, impdesc->Name);
-                char *p = fname;
-                while ((*p = tolower(*p)))
-                    ++p;
-                
-                // load specified DLL, all DLLs are located in the libs/ subdirectory
-                char libname[MAX_PATH_LEN];
-                strncpy(libname, "libs/", MAX_PATH_LEN - 1);
-                strncat(libname, fname, MAX_PATH_LEN - 1 - strlen("libs/"));
-                uint32_t dllbase;
-                uint32_t *fnames;
-                uint32_t *fptrs;
-                uint32_t nfuncs;
-                logmsg(INFO, "loading DLL %s used by this image", fname);
-                if (load_image(libname, &dllbase, NULL, &fnames, &fptrs, &nfuncs) == -1) {
-                    logmsg(ERROR, "failed to load DLL %s");
-                    return -1;
-                }
-
-                logmsg(INFO, "patching addresses of imported functions into the Import Address Table (IAT)");
-                IMAGE_THUNK_DATA *thunk = (IMAGE_THUNK_DATA *) RVA_TO_PTR(imgbase, impdesc->FirstThunk);
-                void *faddr;
-                // A thunk is just a 32-bit value than can mean different things (implemented as a C union).
-                // Before patching is is (usually) an RVA pointing to an IMAGE_IMPORT_BY_NAME structure (the 
-                // AddressOfData field). When the function described by this structure is found in the imported
-                // DLL, this RVA get replaced by a (32-bit) pointer to the function itself (the Function field).
-                while (thunk->AddressOfData != 0) {
-                    IMAGE_IMPORT_BY_NAME *func = (IMAGE_IMPORT_BY_NAME *) RVA_TO_PTR(imgbase, thunk->AddressOfData); 
-                    if ((faddr = get_func_by_name(func->Name, dllbase, fnames, fptrs, nfuncs)) != NULL) {
-                        thunk->Function = (uint32_t) faddr;
-                        logmsg(DEBUG, "patched function %s with address %p", func->Name, faddr);
-                    }
-                    else {
-                        logmsg(ERROR, "function %s not found in DLL %s", func->Name, fname);
-                        return -1;
-                    }
-                    ++thunk;
-                }
-                ++impdesc;
-            }
         }
         else if (strncmp((const char *) sechdr->Name, ".edata", 8) == 0) {
+            // needs to be writable because we "fix" the function names
             prot = PROT_READ | PROT_WRITE;
-
-            logmsg(DEBUG, "functions exported by this DLL:");
-            IMAGE_EXPORT_DIRECTORY *expdir = (IMAGE_EXPORT_DIRECTORY *) secbase;
-            // AddressOfNames and AddressOfFunctions are arrays of *RVAs*, not pointers (4 bytes vs. 8 bytes on a 64-bit architecture)
-            uint32_t *fnames = (uint32_t *) RVA_TO_PTR(imgbase, expdir->AddressOfNames);
-            uint32_t *fptrs  = (uint32_t *) RVA_TO_PTR(imgbase, expdir->AddressOfFunctions);
-            if (func_names && func_ptrs && nfuncs) {
-                *func_names = fnames;
-                *func_ptrs  = fptrs;
-                *nfuncs     = expdir->NumberOfNames;
-            }
-            for (uint32_t i = 0; i < expdir->NumberOfNames; ++i) {
-                char *fname = RVA_TO_PTR(imgbase, fnames[i]);
-                // remove trailing '@' and (ordinal?) number
-                fname = strsep(&fname, "@");
-                logmsg(DEBUG, "%s at address %p", fname, RVA_TO_PTR(imgbase, fptrs[i]));
-            }
         }
-            
-
         if (mprotect(secbase, secsize, prot) == -1) {
             logmsg(ERROR, "cannot set protection of mapped area: %s", strerror(errno));
             return -1;
         }
         
-        // dump the first 128 bytes for inspection
-//        hexdump((uint8_t *) secbase, 128);
-
         // move to next section
         ++sechdr;
         ++nsec;
     }
+
+
+    // load needed DLLs and patch addresses of imported functions into the Import Address Table (IAT)
+    if (nthdrs->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size > 0) {
+        IMAGE_IMPORT_DESCRIPTOR *impdesc = (IMAGE_IMPORT_DESCRIPTOR *) RVA_TO_PTR(imgbase, nthdrs->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
+        while (impdesc->FirstThunk != 0) {
+            char *fname = RVA_TO_PTR(imgbase, impdesc->Name);
+            char *p = fname;
+            while ((*p = tolower(*p)))
+                ++p;
+            
+            // load specified DLL, all DLLs are located in the libs/ subdirectory
+            char libname[MAX_PATH_LEN];
+            strncpy(libname, "libs/", MAX_PATH_LEN - 1);
+            strncat(libname, fname, MAX_PATH_LEN - 1 - strlen("libs/"));
+            uint32_t dllbase;
+            uint32_t *fnames;
+            uint32_t *fptrs;
+            uint32_t nfuncs;
+            logmsg(INFO, "loading DLL %s used by this image", fname);
+            if (load_image(libname, &dllbase, NULL, &fnames, &fptrs, &nfuncs) == -1) {
+                logmsg(ERROR, "failed to load DLL %s");
+                return -1;
+            }
+
+            logmsg(INFO, "patching addresses of imported functions into the Import Address Table (IAT)");
+            IMAGE_THUNK_DATA *thunk = (IMAGE_THUNK_DATA *) RVA_TO_PTR(imgbase, impdesc->FirstThunk);
+            void *faddr;
+            // A thunk is just a 32-bit value than can mean different things (implemented as a C union).
+            // Before patching is is (usually) an RVA pointing to an IMAGE_IMPORT_BY_NAME structure (the 
+            // AddressOfData field). When the function described by this structure is found in the imported
+            // DLL, this RVA get replaced by a (32-bit) pointer to the function itself (the Function field).
+            while (thunk->AddressOfData != 0) {
+                IMAGE_IMPORT_BY_NAME *func = (IMAGE_IMPORT_BY_NAME *) RVA_TO_PTR(imgbase, thunk->AddressOfData); 
+                if ((faddr = get_func_by_name(func->Name, dllbase, fnames, fptrs, nfuncs)) != NULL) {
+                    thunk->Function = (uint32_t) faddr;
+                    logmsg(DEBUG, "patched function %s with address %p", func->Name, faddr);
+                }
+                else {
+                    logmsg(ERROR, "function %s not found in DLL %s", func->Name, fname);
+                    return -1;
+                }
+                ++thunk;
+            }
+            ++impdesc;
+        }
+    }
+
+
+    // "fix" names of exported functions (see below) and store pointers in output parameters
+    if (nthdrs->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size > 0) {
+        logmsg(DEBUG, "functions exported by this DLL:");
+        IMAGE_EXPORT_DIRECTORY *expdir = (IMAGE_EXPORT_DIRECTORY *) RVA_TO_PTR(imgbase, nthdrs->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
+        // AddressOfNames and AddressOfFunctions are arrays of *RVAs*, not pointers (4 bytes vs. 8 bytes on a 64-bit architecture)
+        uint32_t *fnames = (uint32_t *) RVA_TO_PTR(imgbase, expdir->AddressOfNames);
+        uint32_t *fptrs  = (uint32_t *) RVA_TO_PTR(imgbase, expdir->AddressOfFunctions);
+        if (func_names && func_ptrs && nfuncs) {
+            *func_names = fnames;
+            *func_ptrs  = fptrs;
+            *nfuncs     = expdir->NumberOfNames;
+        }
+        for (uint32_t i = 0; i < expdir->NumberOfNames; ++i) {
+            char *fname = RVA_TO_PTR(imgbase, fnames[i]);
+            // remove trailing '@' and (ordinal?) number
+            fname = strsep(&fname, "@");
+            logmsg(DEBUG, "%s at address %p", fname, RVA_TO_PTR(imgbase, fptrs[i]));
+        }
+    }
+
     return 0;
 }
 
