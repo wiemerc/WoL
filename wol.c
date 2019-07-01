@@ -206,6 +206,8 @@ static int load_image(
         int prot = 0;
         if (strncmp((const char *) sechdr->Name, ".text", 8) == 0) {
             prot = PROT_READ | PROT_EXEC;
+            if (entry_point)
+                *entry_point = secbase;
         }
         else if ((strncmp((const char *) sechdr->Name, ".data", 8) == 0) || 
                  (strncmp((const char *) sechdr->Name, ".bss", 8) == 0)) {
@@ -307,21 +309,10 @@ static int load_image(
     // setup separate stack for the program (necessary for 32-bit programs because our stack lives above the 4GB limit)
     // TODO: take size from the image and move it to the end of the 4GB address space
     if (entry_point) {
-        if (mmap((void *) STACK_ADDR, 1048576, PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) {
+        if (mmap((void *) STACK_ADDR, STACK_SIZE, PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) {
             logmsg(ERROR, "could not create anonymous mapping for stack: %s", strerror(errno));
             return -1;
         }
-    }
-
-    // setup thunk (or trampoline) for the switch to 32-bit mode and return it as entry point
-    // TODO: check if program is 32 or 64 bits
-    if (entry_point) {
-        if (mmap((void *) THUNK_ADDR, sizeof(THUNK_CODE), PROT_WRITE | PROT_EXEC, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) {
-            logmsg(ERROR, "could not create anonymous mapping for thunk: %s", strerror(errno));
-            return -1;
-        }
-        memcpy((void *) THUNK_ADDR, &THUNK_CODE, sizeof(THUNK_CODE));
-        *entry_point = (void *) THUNK_ADDR;
     }
 
     return 0;
@@ -355,10 +346,10 @@ int main(int argc, char **argv)
     logmsg(INFO, "loaded program successfully, entry point = %p", entry_point);
 
     // run program
-    // TODO: run program via call_entry_point(entry_point, old_rsp) which is our thunk
+    // TODO: check if Windows program is 32 or 64 bits and pass type to our thunk
     logmsg(INFO, "running program...");
     fputs("\n>>>>>>>>>>>>\n", stdout);
-    status = entry_point();
+    status = entry_point_thunk(entry_point, (void *) (STACK_ADDR + STACK_SIZE));
     fputs("<<<<<<<<<<<<\n\n", stdout);
     logmsg(INFO, "exit code = %d", status);
     return 0;
