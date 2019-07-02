@@ -306,8 +306,9 @@ static int load_image(
     }
 
 
-    // setup separate stack for the program (necessary for 32-bit programs because our stack lives above the 4GB limit)
-    // TODO: take size from the image and move it to the end of the 4GB address space
+    // setup separate stack for the program (necessary for 32-bit programs because
+    // our stack lives above the 4GB limit, and safer anyway)
+    // TODO: use stack size specified in the image
     if (entry_point) {
         if (mmap((void *) STACK_ADDR, STACK_SIZE, PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) {
             logmsg(ERROR, "could not create anonymous mapping for stack: %s", strerror(errno));
@@ -329,6 +330,7 @@ int main(int argc, char **argv)
     int32_t              (*entry_point)(), status;
 
     // install signal handler for SIGSEGV
+    // TODO: install / deinstall handler in load_image()
     act.sa_handler = sigsegv;
     act.sa_flags   = 0;
     sigemptyset(&act.sa_mask);

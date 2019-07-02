@@ -1,7 +1,9 @@
 CC      := clang
 AS  	:= as
 CFLAGS  := -std=c99 -D_DEFAULT_SOURCE -Wall -Wno-int-to-pointer-cast -Wno-compare-distinct-pointer-types -g
-LDFLAGS := -Wl,-Ttext,0x00800000 -Wl,-Tdata,0x00C00000 -Wl,-Tbss,0x01000000
+# We need to move the text segment to a different address because both 64-bit 
+# Linux and Windows normally use 0x00400000 as start address for it.
+LDFLAGS := -Wl,-Ttext,0x10400000
 
 .PHONY: all clean libs examples
 

@@ -159,8 +159,8 @@ typedef struct {
 
 // some constants
 #define MAX_PATH_LEN 256
-#define STACK_ADDR   0x00200000
-#define STACK_SIZE   0x00100000
+#define STACK_ADDR   0xff000000
+#define STACK_SIZE   0x00100000         // 1MB
 
 // declaration of our thunk
 int32_t entry_point_thunk(void *entry_point, void *stack_addr);
