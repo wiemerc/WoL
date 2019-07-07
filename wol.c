@@ -80,7 +80,7 @@ static void *get_func_by_name(
 //
 static int load_image(
     const char *fname,                      // name of the image file (executable or DLL)
-    uint32_t *out_imgbase,                  // will be set to the image base address
+    uint32_t *out_imgbase,                  // will be set to the image base address (only needed for DLLs)
     int32_t (**entry_point)(),              // if not NULL, *entry_point will be set to start address of the .text segment
     uint32_t **func_names,                  // if not NULL, *func_names will be set to AddressOfNames in the .edata segment
     uint32_t **func_ptrs,                   // if not NULL, *func_ptrs will be set to AddressOfFunctions in the .edata segment
@@ -149,7 +149,7 @@ static int load_image(
     // load individual sections
     // We just load the sections here and access the export and import tables via the data directory
     // later. This is the correct approach because while MinGW puts these tables into their own
-    // .edata and .idata sections, which means we wouldn't need to lookup these tables in the
+    // .edata and .idata sections, which means we wouldn't need to look these tables up in the
     // data directory, the Microsoft compiler / linker (MSVC) does not.
     logmsg(INFO, "loading sections");
     sechdr = (IMAGE_SECTION_HEADER *) (((uint8_t *) nthdrs) + sizeof(IMAGE_NT_HEADERS));
@@ -178,7 +178,7 @@ static int load_image(
             DEBUG,
             "section %.8s at offset 0x%08x, %d / %d (virtual / on disk) bytes large, will be mapped at 0x%08x",
             sechdr->Name,
-            secptr,
+            sechdr->PointerToRawData,
             secsize,
             size_on_disk,
             secbase
@@ -186,8 +186,9 @@ static int load_image(
         
         // create anonymous mapping at the corresponding address,
         // writeable so we can copy the data (see below)
-        // TODO: Can the actual mapping be larger than specified because only whole pages get mapped?
-        //       How do we make sure in this case that consecutive sections don't overlap?
+        // The actual mapping can be larger than specified because only whole pages get mapped.
+        // However, this is not a problem because the base addresses of the sections are always
+        // at least one page (= 4096 bytes) apart.
         if (mmap(secbase, secsize, PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) {
             logmsg(ERROR, "could not create anonymous mapping: %s", strerror(errno));
             return -1;
@@ -195,8 +196,11 @@ static int load_image(
         
         // copy section data to the mapped area
         // We copy the data because the offset in the image is (normally) not a multiple
-        // of the page size, so we can't use it in the mmap() call. We can't
+        // of the page size, so we can't use it in an mmap() call. We can't
         // use lseek() either, because mmap() seems to ignore the current file position.
+        // Also, we can't map the whole image at the base address (normally 0x00400000)
+        // because the offsets of the sections differ from their RVAs (e. g. the .text
+        // section starts at offset 0x0200 in the image but has to be mapped at 0x00401000).
         // We check if there is actually data to copy but only copy the real, not any
         // padded bytes.
         if (size_on_disk > 0)
