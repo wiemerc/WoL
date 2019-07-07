@@ -150,17 +150,18 @@ typedef struct {
 // some useful macros
 #define RVA_TO_PTR(imgbase, rva) ((void *) ((uint8_t *) rva) + imgbase)
 
-// TODO: replace logmsg() with macros DEBUG(), INFO()...
-#define DEBUG 10
-#define INFO  20
-#define WARN  30
-#define ERROR 40
-#define CRIT  50
+#define DEBUG(fmt, ...) {fputs("DEBUG: ", stdout); printf(fmt, ##__VA_ARGS__); fputs("\n", stdout);}
+#define INFO(fmt, ...)  {fputs("INFO:  ", stdout); printf(fmt, ##__VA_ARGS__); fputs("\n", stdout);}
+#define WARN(fmt, ...)  {fputs("WARN:  ", stdout); printf(fmt, ##__VA_ARGS__); fputs("\n", stdout);}
+#define ERROR(fmt, ...) {fputs("ERROR: ", stdout); printf(fmt, ##__VA_ARGS__); fputs("\n", stdout);}
+#define CRIT(fmt, ...)  {fputs("CRIT:  ", stdout); printf(fmt, ##__VA_ARGS__); fputs("\n", stdout);}
+
 
 // some constants
 #define MAX_PATH_LEN 256
 #define STACK_ADDR   0xff000000
 #define STACK_SIZE   0x00100000         // 1MB
+
 
 // declaration of our thunk
 int32_t entry_point_thunk(void *entry_point, void *stack_addr);

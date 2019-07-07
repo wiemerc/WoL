@@ -23,31 +23,11 @@
 
 
 //
-// log a message with severity
-//
-static void logmsg(int level, const char *fmt, ...)
-{
-    va_list args;
-    va_start(args, fmt);
- 
-    switch (level) {
-        case DEBUG: fputs("DEBUG: ", stdout); break;
-        case INFO:  fputs("INFO:  ", stdout);  break;
-        case WARN:  fputs("WARN:  ", stdout);  break;
-        case ERROR: fputs("ERROR: ", stdout); break;
-        case CRIT:  fputs("CRIT:  ", stdout);  break;
-    }
-    vprintf(fmt, args);
-    fputs("\n", stdout);
-}
-
-
-//
 // signal handler for SIGSEGV
 //
 static void sigsegv(int signum)
 {
-    logmsg(CRIT, "segmentation fault occurred while loading program image");
+    CRIT("segmentation fault occurred while loading program image");
     exit(1);
 }
 
@@ -98,31 +78,31 @@ static int load_image(
 
 
     // map whole image into memory
-    logmsg(INFO, "mapping file %s into memory", fname);
+    INFO("mapping file %s into memory", fname);
     if ((fd = open(fname, O_RDONLY)) == -1) {
-        logmsg(ERROR, "could not open file: %s", strerror(errno));
+        ERROR("could not open file: %s", strerror(errno));
         return -1;
     }
     if (fstat(fd, &sb) == -1) {
-        logmsg(ERROR, "could not get file status: %s", strerror(errno));
+        ERROR("could not get file status: %s", strerror(errno));
         return -1;
     }
     if ((sof = mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0)) == MAP_FAILED) {
-        logmsg(ERROR, "could not memory-map file: %s", strerror(errno));
+        ERROR("could not memory-map file: %s", strerror(errno));
         return -1;
     }
     eof = ((uint8_t *) sof) + sb.st_size;
-    logmsg(DEBUG, "image mapped at address %p", sof);
+    DEBUG("image mapped at address %p", sof);
     
 
     // check DOS header
     if ((((uint8_t *) sof) + sizeof(IMAGE_DOS_HEADER)) >= eof) {
-        logmsg(ERROR, "image does not contain complete DOS header");
+        ERROR("image does not contain complete DOS header");
         return -1;
     }
     doshdr = (IMAGE_DOS_HEADER *) sof;
     if (doshdr->e_magic != 0x5a4d) {
-        logmsg(ERROR, "signature of DOS header incorrect");
+        ERROR("signature of DOS header incorrect");
         return -1;
     }
     nthdrs = (IMAGE_NT_HEADERS *) (((uint8_t *) sof) + doshdr->e_lfanew);
@@ -130,19 +110,19 @@ static int load_image(
 
     // check NT headers
     if ((nthdrs < sof) || (nthdrs >= eof)) {
-        logmsg(ERROR, "pointer to NT headers incorrect");
+        ERROR("pointer to NT headers incorrect");
         return -1;
     }
     if ((((uint8_t *) nthdrs) + sizeof(IMAGE_NT_HEADERS)) >= eof) {
-        logmsg(ERROR, "image does not contain complete NT headers");
+        ERROR("image does not contain complete NT headers");
         return -1;
     }
     if (nthdrs->Signature != 0x00004550) {
-        logmsg(ERROR, "signature of NT headers incorrect");
+        ERROR("signature of NT headers incorrect");
         return -1;
     }
-    logmsg(DEBUG, "number of sections: %d", nthdrs->FileHeader.NumberOfSections);
-    logmsg(DEBUG, "image base address: 0x%08x", nthdrs->OptionalHeader.ImageBase);
+    DEBUG("number of sections: %d", nthdrs->FileHeader.NumberOfSections);
+    DEBUG("image base address: 0x%08x", nthdrs->OptionalHeader.ImageBase);
     imgbase = *out_imgbase = nthdrs->OptionalHeader.ImageBase;
     
 
@@ -151,12 +131,12 @@ static int load_image(
     // later. This is the correct approach because while MinGW puts these tables into their own
     // .edata and .idata sections, which means we wouldn't need to look these tables up in the
     // data directory, the Microsoft compiler / linker (MSVC) does not.
-    logmsg(INFO, "loading sections");
+    INFO("loading sections");
     sechdr = (IMAGE_SECTION_HEADER *) (((uint8_t *) nthdrs) + sizeof(IMAGE_NT_HEADERS));
     nsec = 1;
     while (nsec <= nthdrs->FileHeader.NumberOfSections) {
         if ((sechdr < sof) || (sechdr >= eof)) {
-            logmsg(ERROR, "pointer to section header incorrect");
+            ERROR("pointer to section header incorrect");
             return -1;
         }
         // TODO: check if section header is complete
@@ -169,19 +149,18 @@ static int load_image(
         uint32_t secsize      = sechdr->VirtualSize;
         uint32_t size_on_disk = sechdr->SizeOfRawData;
         if ((secptr < sof) || (secptr >= eof)) {
-            logmsg(ERROR, "pointer to section incorrect");
+            ERROR("pointer to section incorrect");
             return -1;
         }
         // TODO: check if section is complete
         
-        logmsg(
-            DEBUG,
+        DEBUG(
             "section %.8s at offset 0x%08x, %d / %d (virtual / on disk) bytes large, will be mapped at 0x%08x",
             sechdr->Name,
             sechdr->PointerToRawData,
             secsize,
             size_on_disk,
-            secbase
+            (uint32_t) secbase
         );
         
         // create anonymous mapping at the corresponding address,
@@ -190,7 +169,7 @@ static int load_image(
         // However, this is not a problem because the base addresses of the sections are always
         // at least one page (= 4096 bytes) apart.
         if (mmap(secbase, secsize, PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) {
-            logmsg(ERROR, "could not create anonymous mapping: %s", strerror(errno));
+            ERROR("could not create anonymous mapping: %s", strerror(errno));
             return -1;
         }
         
@@ -232,7 +211,7 @@ static int load_image(
             prot = PROT_READ | PROT_WRITE;
         }
         if (mprotect(secbase, secsize, prot) == -1) {
-            logmsg(ERROR, "cannot set protection of mapped area: %s", strerror(errno));
+            ERROR("cannot set protection of mapped area: %s", strerror(errno));
             return -1;
         }
         
@@ -259,13 +238,13 @@ static int load_image(
             uint32_t *fnames;
             uint32_t *fptrs;
             uint32_t nfuncs;
-            logmsg(INFO, "loading DLL %s used by this image", fname);
+            INFO("loading DLL %s used by this image", fname);
             if (load_image(libname, &dllbase, NULL, &fnames, &fptrs, &nfuncs) == -1) {
-                logmsg(ERROR, "failed to load DLL %s");
+                ERROR("failed to load DLL");
                 return -1;
             }
 
-            logmsg(INFO, "patching addresses of imported functions into the Import Address Table (IAT)");
+            INFO("patching addresses of imported functions into the Import Address Table (IAT)");
             IMAGE_THUNK_DATA *thunk = (IMAGE_THUNK_DATA *) RVA_TO_PTR(imgbase, impdesc->FirstThunk);
             void *faddr;
             // A thunk is just a 32-bit value than can mean different things (implemented as a C union).
@@ -276,10 +255,10 @@ static int load_image(
                 IMAGE_IMPORT_BY_NAME *func = (IMAGE_IMPORT_BY_NAME *) RVA_TO_PTR(imgbase, thunk->AddressOfData); 
                 if ((faddr = get_func_by_name(func->Name, dllbase, fnames, fptrs, nfuncs)) != NULL) {
                     thunk->Function = (uint32_t) faddr;
-                    logmsg(DEBUG, "patched function %s with address %p", func->Name, faddr);
+                    DEBUG("patched function %s with address %p", func->Name, faddr);
                 }
                 else {
-                    logmsg(ERROR, "function %s not found in DLL %s", func->Name, fname);
+                    ERROR("function %s not found in DLL %s", func->Name, fname);
                     return -1;
                 }
                 ++thunk;
@@ -291,7 +270,7 @@ static int load_image(
 
     // "fix" names of exported functions (see below) and store pointers in output parameters
     if (nthdrs->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size > 0) {
-        logmsg(DEBUG, "functions exported by this DLL:");
+        DEBUG("functions exported by this DLL:");
         IMAGE_EXPORT_DIRECTORY *expdir = (IMAGE_EXPORT_DIRECTORY *) RVA_TO_PTR(imgbase, nthdrs->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
         // AddressOfNames and AddressOfFunctions are arrays of *RVAs*, not pointers (4 bytes vs. 8 bytes on a 64-bit architecture)
         uint32_t *fnames = (uint32_t *) RVA_TO_PTR(imgbase, expdir->AddressOfNames);
@@ -305,7 +284,7 @@ static int load_image(
             char *fname = RVA_TO_PTR(imgbase, fnames[i]);
             // remove trailing '@' and (ordinal?) number
             fname = strsep(&fname, "@");
-            logmsg(DEBUG, "%s at address %p", fname, RVA_TO_PTR(imgbase, fptrs[i]));
+            DEBUG("%s at address %p", fname, RVA_TO_PTR(imgbase, fptrs[i]));
         }
     }
 
@@ -315,7 +294,7 @@ static int load_image(
     // TODO: use stack size specified in the image
     if (entry_point) {
         if (mmap((void *) STACK_ADDR, STACK_SIZE, PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) {
-            logmsg(ERROR, "could not create anonymous mapping for stack: %s", strerror(errno));
+            ERROR("could not create anonymous mapping for stack: %s", strerror(errno));
             return -1;
         }
     }
@@ -339,24 +318,24 @@ int main(int argc, char **argv)
     act.sa_flags   = 0;
     sigemptyset(&act.sa_mask);
     if (sigaction(SIGSEGV, &act, NULL) == -1) {
-        logmsg(CRIT, "failed to install signal handler: %s", strerror(errno));
+        CRIT("failed to install signal handler: %s", strerror(errno));
         return -1;
     }
 
     // load program
-    logmsg(INFO, "loading program %s", argv[1]);
+    INFO("loading program %s", argv[1]);
     if (load_image(argv[1], &imgbase, &entry_point, NULL, NULL, NULL) == -1) {
-        logmsg(ERROR, "failed to load program");
+        ERROR("failed to load program");
         return 1;
     }
-    logmsg(INFO, "loaded program successfully, entry point = %p", entry_point);
+    INFO("loaded program successfully, entry point = %p", entry_point);
 
     // run program
     // TODO: check if Windows program is 32 or 64 bits and pass type to our thunk
-    logmsg(INFO, "running program...");
+    INFO("running program...");
     fputs("\n>>>>>>>>>>>>\n", stdout);
     status = entry_point_thunk(entry_point, (void *) (STACK_ADDR + STACK_SIZE));
     fputs("<<<<<<<<<<<<\n\n", stdout);
-    logmsg(INFO, "exit code = %d", status);
+    INFO("exit code = %d", status);
     return 0;
 }
