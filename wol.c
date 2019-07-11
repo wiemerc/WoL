@@ -87,7 +87,7 @@ static int load_image(
         ERROR("could not get file status: %s", strerror(errno));
         return -1;
     }
-    if ((sof = mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0)) == MAP_FAILED) {
+    if ((sof = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED) {
         ERROR("could not memory-map file: %s", strerror(errno));
         return -1;
     }
@@ -168,7 +168,7 @@ static int load_image(
         // The actual mapping can be larger than specified because only whole pages get mapped.
         // However, this is not a problem because the base addresses of the sections are always
         // at least one page (= 4096 bytes) apart.
-        if (mmap(secbase, secsize, PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) {
+        if (mmap(secbase, secsize, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) {
             ERROR("could not create anonymous mapping: %s", strerror(errno));
             return -1;
         }
@@ -293,7 +293,7 @@ static int load_image(
     // our stack lives above the 4GB limit, and safer anyway)
     // TODO: use stack size specified in the image
     if (entry_point) {
-        if (mmap((void *) STACK_ADDR, STACK_SIZE, PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) {
+        if (mmap((void *) STACK_ADDR, STACK_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) {
             ERROR("could not create anonymous mapping for stack: %s", strerror(errno));
             return -1;
         }
