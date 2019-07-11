@@ -16,8 +16,10 @@ retf                                # "return" to 32-bit code
 l_entry:
 .code32
 mov     esp, esi                    # load new stack address (2nd argument - stack_addr)
-push    ss                          # set DS to the value of SS (see https://stackoverflow.com/questions/41921711/running-32-bit-code-in-64-bit-process-on-linux-memory-access)
-pop     ds
+push    ss                          # set DS and ES to the value of SS
+pop     ds                          # (see https://stackoverflow.com/questions/41921711/running-32-bit-code-in-64-bit-process-on-linux-memory-access)
+push    ss
+pop     es
 call    edi                         # call entry point of Windows program passed as 1st argument (entry_point)
 push    0x0                         # set DS back to 0
 pop     ds
