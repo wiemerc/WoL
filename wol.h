@@ -164,4 +164,4 @@ typedef struct {
 
 
 // declaration of our thunk
-int32_t entry_point_thunk(void *entry_point, void *stack_addr);
+int32_t entry_point_thunk(void *entry_point, void *stack_ptr);
