@@ -46,7 +46,9 @@ static void *get_func_by_name(
 )
 {
     for (uint32_t i = 0; i < nfuncs; ++i) {
-        if (strcmp(fname, RVA_TO_PTR(dllbase, func_names[i])) == 0)
+        // We use strstr() instead of strcmp() because an @ sign and a number 
+        // (don't know what it means) are appended to the function names in the DLL
+        if (strstr(RVA_TO_PTR(dllbase, func_names[i]), fname))
             return RVA_TO_PTR(dllbase, func_ptrs[i]);
     }
     return NULL;
@@ -250,7 +252,7 @@ static int load_image(
             // A thunk is just a 32-bit value than can mean different things (implemented as a C union).
             // Before patching is is (usually) an RVA pointing to an IMAGE_IMPORT_BY_NAME structure (the 
             // AddressOfData field). When the function described by this structure is found in the imported
-            // DLL, this RVA get replaced by a (32-bit) pointer to the function itself (the Function field).
+            // DLL, this RVA gets replaced by a (32-bit) pointer to the function itself (the Function field).
             while (thunk->AddressOfData != 0) {
                 IMAGE_IMPORT_BY_NAME *func = (IMAGE_IMPORT_BY_NAME *) RVA_TO_PTR(imgbase, thunk->AddressOfData); 
                 if ((faddr = get_func_by_name(func->Name, dllbase, fnames, fptrs, nfuncs)) != NULL) {
@@ -268,7 +270,7 @@ static int load_image(
     }
 
 
-    // "fix" names of exported functions (see below) and store pointers in output parameters
+    // store pointers to the lists of names / addresses of the exported functions in output parameters
     if (nthdrs->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size > 0) {
         DEBUG("functions exported by this DLL:");
         IMAGE_EXPORT_DIRECTORY *expdir = (IMAGE_EXPORT_DIRECTORY *) RVA_TO_PTR(imgbase, nthdrs->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
@@ -281,10 +283,7 @@ static int load_image(
             *nfuncs     = expdir->NumberOfNames;
         }
         for (uint32_t i = 0; i < expdir->NumberOfNames; ++i) {
-            char *fname = RVA_TO_PTR(imgbase, fnames[i]);
-            // remove trailing '@' and (ordinal?) number
-            fname = strsep(&fname, "@");
-            DEBUG("%s at address %p", fname, RVA_TO_PTR(imgbase, fptrs[i]));
+            DEBUG("%s at address %p", RVA_TO_PTR(imgbase, fnames[i]), RVA_TO_PTR(imgbase, fptrs[i]));
         }
     }
 
@@ -333,9 +332,9 @@ int main(int argc, char **argv)
     // run program
     // TODO: check if Windows program is 32 or 64 bits and pass type to our thunk
     INFO("running program...");
-    fputs("\n>>>>>>>>>>>>\n", stdout);
+    fputs("\n>>>>>>>>>>>>>>>>>>>>>>>>\n", stdout);
     status = entry_point_thunk(entry_point, (void *) (STACK_ADDR + STACK_SIZE));
-    fputs("<<<<<<<<<<<<\n\n", stdout);
+    fputs("<<<<<<<<<<<<<<<<<<<<<<<<\n\n", stdout);
     INFO("exit code = %d", status);
     return 0;
 }
