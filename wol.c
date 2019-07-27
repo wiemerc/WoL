@@ -69,6 +69,7 @@ static int load_image(
     uint32_t *nfuncs                        // if not NULL, *nfuncs will be set to the number of exported functions
 )
 {
+    struct sigaction     newact, oldact;    // structures for signal handler
     int                  fd;                // file descriptor
     struct stat          sb;                // buffer for fstat
     void                 *sof, *eof;        // start-of-file and end-of-file pointers
@@ -78,6 +79,15 @@ static int load_image(
     int                  nsec;              // number of section
     uint32_t             imgbase;           // virtual base address of image
 
+
+    // install our own signal handler for SIGSEGV
+    newact.sa_handler = sigsegv;
+    newact.sa_flags   = 0;
+    sigemptyset(&newact.sa_mask);
+    if (sigaction(SIGSEGV, &newact, &oldact) == -1) {
+        ERROR("failed to install signal handler: %s", strerror(errno));
+        return -1;
+    }
 
     // map whole image into memory
     INFO("mapping file %s into memory", fname);
@@ -298,6 +308,11 @@ static int load_image(
         }
     }
 
+    // restore previous signal handler
+    if (sigaction(SIGSEGV, &oldact, NULL) == -1) {
+        ERROR("failed to restore signal handler: %s", strerror(errno));
+        return -1;
+    }
     return 0;
 }
 
@@ -307,19 +322,8 @@ static int load_image(
 //
 int main(int argc, char **argv)
 {
-    struct sigaction     act;
     uint32_t             imgbase;
     int32_t              (*entry_point)(), status;
-
-    // install signal handler for SIGSEGV
-    // TODO: install / deinstall handler in load_image()
-    act.sa_handler = sigsegv;
-    act.sa_flags   = 0;
-    sigemptyset(&act.sa_mask);
-    if (sigaction(SIGSEGV, &act, NULL) == -1) {
-        CRIT("failed to install signal handler: %s", strerror(errno));
-        return -1;
-    }
 
     // load program
     INFO("loading program %s", argv[1]);
