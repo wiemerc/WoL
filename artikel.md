@@ -23,6 +23,7 @@ Um nun die Windows API für das Beispielprogramm auf Linux zu emulieren habe ich
 
 Das folgende Diagramm zeigt nochmal die durchlaufenen Komponenten wenn ein Programm eine Systemroutine verwendet, links für Windows und rechts für WoL.
  
+TODO
 Windows: Kernel <-> Native API (NTDLL.DLL) <-> Windows API (KERNEL32.DLL) <-> Programm
 WoL: Kernel <-> Linux API <-> eigene KERNEL32.DLL <-> Programm
 
@@ -64,8 +65,9 @@ Die zweite Besonderheit ist, dass die Funktion mit der Aufrufkonvention `__stdca
 
 Zum anderen nutzen Windows und Linux unterschiedliche Dateiformate fu"r ausführbare Programme, Windows verwendet die Formate PE (32 Bit) bzw. PE+ (64 Bit), Linux verwendet ELF. Der Loader von Linux, also die Komponente im Betriebssystem, die fu"r das Laden von Programmen zusta"ndig ist, kann daher Windows-Programme gar nicht laden. Das musste ich also selber implementieren. Das stellte sich allerdings als relativ einfach heraus, da PE so entworfen wurde , dass die ganze Programmdatei (das _Image_) mit Memory-mapped IO an einem Stück in den Speicher geladen werden kann. Das bedeutet, dass die bei der Ausführung verwendeten Datenstrukturen, wie die Import- und Export-Tabellen, bereits in der Datei in sehr ähnlicher Form vorhanden sind und nicht erst beim Laden der Datei im Speicher erstellt werden müssen (im Gegensatz zu dem Vorgängerformat NE, das von den 16-Bit-Windows-Versionen verwendet wurde).
 
-Eine sehr gute Beschreibung des PE-Formats und der zugrunde liegenden Konzepte bietet der Artikel [Peering Inside the PE](https://docs.microsoft.com/en-us/previous-versions/ms809762(v=msdn.10)). Deswegen werde ich in diesem Artikel auch nicht auf die Details des Formats eingehen. Weitergehende Informationen findet man auch in der offiziellen PE-Spezifikation von Microsoft.
-TODO: Definition der Strukturen
+Eine sehr gute Beschreibung des PE-Formats und der zugrunde liegenden Konzepte bietet der Artikel [Peering Inside the PE](https://docs.microsoft.com/en-us/previous-versions/ms809762(v=msdn.10)). Deswegen werde ich in diesem Artikel auch nicht auf die Details des Formats eingehen. Weitergehende Informationen findet man auch in der offiziellen PE-Spezifikation von Microsoft. Die von PE verwendeten Datenstrukturen sind bei Windows in der Header-Datei `winnt.h` definiert. WoL verwendet allerdings nicht direkt diese Header-Datei sondern die benötigten Strukturen sind, basierend auf den Definitionen in `winnt.h`, in der Datei `wol.h` definiert. Der Grund dafür ist, dass die Datei `winnt.h` eine Reihe von MSVC-spezifischen Konstrukten enthält, mit denen weder GCC noch Clang zurechtkommen.
+
+TODO: Übersichtsbild
 
 Es wird bei PE und PE+ davon ausgegangen, dass das Programm immer an die gleiche Adresse (0x00400000) geladen wird, deswegen enthält die Programmdatei meistens (TODO: Wie ist das bei MSVC?) keine Relocation-Informationen. Bei 64-Bit-Prozessen unter Linux ist die Adresse 0x00400000 allerdings schon belegt, sie wird standardmässig auch von Linux als Basisadresse von Programmen verwendet. Damit sie für das Windows-Programm verwendet werden kann musste ich deshalb beim Linken von WoL eine andere Startadresse für das Text-Segment angeben, ich habe mich für die Adresse 0x10400000 entschieden (mit der Option `-Wl,-Ttext,0x10400000`).
 
@@ -75,8 +77,8 @@ Das Laden des Programms und der verwendeten DLL(s) ist in WoL in der Funktion `l
 
 1. Komplette Programmdatei mit Memory-mapped IO (mit der Systemroutine `mmap`) in den Speicher laden (an beliebige Adresse)
 
-2. Header (DOS, File und Optional Header) lesen und überprüfen  
-    TODO: Was sind die relevanten Informationen? Signatur? Basisadresse? Stack?
+2. Header lesen und überprüfen  
+    Interessanterweise beginnt jede Programmdatei im PE-Format mit einem kleinen MS-DOS-Programm, das, wenn man es unter MS-DOS ausführte, die Fehlermeldung "This program cannot be run in DOS mode" ausgeben würde. Wie relevant das im Jahr 2019 noch ist sei mal dahingestellt... Dieses "Feature" hat aber zur Folge, dass eine Programmdatei im PE-Format mit einem MS-DOS-Header beginnt, gefolgt von zwei Windows-spezifischen Headern (die als NT-Header bezeichnet werden weil das PE-Format 1993 mit Windows NT eingeführt wurde). Die relevanten Informationen in den Headern sind hierbei der Zeiger auf die Windows-Header im MS-DOS-Header sowie die Basisadresse des Programms und die Anzahl der Segmente in der Datei in den Windows-Headern. Sowohl der MS-DOS- als auch die Windows-Header enthalten eine Signatur, die ich in diesem Schritt zusammen mit der Grösse der Header überprüfe.
 
 3. In diesem Schritt geht es jetzt tatsächlich um das eigentliche Programm beziehungsweise um die einzelnen Segmente (Code, Daten und so weiter). Es gibt in PE eine Segment-Tabelle, über die ich iteriere und für jedes Segment folgendes mache:
     * Mapping für das Segment an der vorgegebenen Adresse (die relative virtuelle Adresse (RVA) + Basisadresse des Programms (normalerweise 0x00400000)) erzeugen  
@@ -85,11 +87,8 @@ Das Laden des Programms und der verwendeten DLL(s) ist in WoL in der Funktion `l
         Weil die Offsets wie gerade erwähnt (normalerweise) nicht an Seitengrenzen ausgerichtet sind kann man ebenfalls nicht einfach die Segmente aus der Datei direkt mappen (der Offset für `mmap` muss ein Vielfaches der Seitengrösse sein und `mmap` ignoriert auch die mit `lseek` gesetzte Position in der Datei).
     * Berechtigungen je nach Typ des Segments setzen (Das Code-Segment muss natürlich ausführbar sein, das Daten-Segment dafür beschreibbar und so weiter)
 
-4. Import-Tabelle bearbeiten:
-    * referenzierte DLL(s) durch einen rekursiven Aufruf von `load_image` laden
-    * Funktionsnamen in der IAT durch die (virtuellen) Adressen der Funktionen in den DLLs ersetzen
-5. Export-Tabelle bearbeiten:
-    * Funktionsnamen "fixen"
+4. Import-Tabelle bearbeiten (siehe auch den Abschnitt [PE File Imports](https://docs.microsoft.com/en-us/previous-versions/ms809762(v=msdn.10)#pe-file-imports) in _Peering Inside the PE_):  
+    Die Import-Tabelle besteht aus einer Liste der von dem Programm verwendeten DLLs (Liste von `IMAGE_IMPORT_DESCRIPTOR`-Strukturen) und jeweils einer Liste der aus der DLL verwendeten Funktionen (Liste von `IMAGE_THUNK_DATA`-Unions). Im Orginalzustand (also so wie sie in der Programmdatei abgelegt ist) besteht die Funktionsliste aus RVAs (das Feld `AddressOfData` der Union), die jeweils auf eine weitere Datenstruktur (`IMAGE_IMPORT_BY_NAME`) verweisen, die den Namen der Funktion enthält. Diese Liste wird jedoch auch vom Programmcode als Sprungtabelle benutzt. Das bedeutet, dass der Aufruf einer Funktion in einer DLL als indirekter Sprung an die in der Funktionsliste der DLL angegebene Adresse (das Feld `Function` der Union) implementiert ist. Deshalb müssen die RVAs durch Zeiger auf die eigentlichen Funktionen ersetzt werden bevor das Programm ausgeführt werden kann, was jedoch einfacher ist als wenn man die Sprungziele direkt im Code patchen müsste. Zuvor muss / müssen natürlich die verwendete(n) DLL(s) durch einen rekursiven Aufruf von `load_image` geladen werden. Dieser Aufruf gibt die Namen und die zugehörigen Adressen der von der DLL exportierten Funktionen zurück, die ich dann zum Patchen der Import-Tabelle verwende (siehe auch den Abschnitt [PE File Exports](https://docs.microsoft.com/en-us/previous-versions/ms809762(v=msdn.10)#pe-file-exports) in _Peering Inside the PE_).
 
 
 ## Weitere Besonderheiten des Programms
@@ -138,7 +137,7 @@ Drei weitere Dinge sollte ich noch erwähnen. Erstens muss man für den 32-Bit-C
 
 Zweitens müssen vor dem Eintritt in die 32-Bit-Welt einige Register gesichert werden. Zum einen sind das die Register RBP und RBX. Das sind zwar 64-Bit-Register, aber die unteren Hälften, nämlich EBP und EBX, könnten auch von 32-bittigem Code genutzt werden. Was ist dann mit den anderen Registern, für die es auch ein 32-Bit-Equivalent gibt, wie RAX, RSI, RDI und so weiter? Deren Wert muss laut der [ABI](https://stackoverflow.com/questions/18024672/what-registers-are-preserved-through-a-linux-x86-64-function-call) für x86-64 bei einem Funktionsaufruf nicht erhalten bleiben. Zum anderen muss natürlich RSP gesichert werden weil ich ja ESP ein paar Zeilen später auf einen neuen Wert setze (um den separaten Stack zu verwenden). Logischerweise kann man RSP nicht auf dem Stack sichern (das Problem mit der Henne und dem Ei...) sondern muss einen anderen Speicherbereich (mit einer bekannten Adresse) oder ein Register dafür nutzen. Ich entschied mich für das Register R12. Das ist nämlich das erste Register, das nicht von 32-Bit-Code genutzt werden kann und dessen Wert bei einem Funktionsaufruf in 64-Bit-Code erhalten bleibt (ebenfalls in der ABI definiert). Welcher 64-Bit-Code wirst du dich jetzt vielleicht fragen. Das Windows-Programm ist doch ein 32-Bit-Programm. Das stimmt, aber dieses Programm nutzt meine Version der `KERNEL32.DLL`. Die ist auch immer noch 32-bittig, dort wird aber die Systemroutine `write` aufgerufen und dadurch landen wir schlussendlich in dem 64-bittigen Kernel von Linux.
 
-Drittens benötigt 32-bittiger Code im Gegensatz zu 64-bittigem den Segmentselektor 0x2b in den Registern DS und ES, also für Datenzugriffe auf den Hauptspeicher. Das ist der gleiche Selektor, der sowohl im 32- als auch im 64-Bit-Modes für SS, also für Stack-Zugriffe, verwendet wird. Deswegen kopiere ich einfach den Wert von SS nach DS und ES.
+Drittens benötigt 32-bittiger Code im Gegensatz zu 64-bittigem den Segmentselektor 0x2b in den Registern DS und ES, also für Datenzugriffe auf den Hauptspeicher (den Grund dafür kenne ich nicht). Das ist der gleiche Selektor, der sowohl im 32- als auch im 64-Bit-Modes für SS, also für Stack-Zugriffe, verwendet wird. Deswegen kopiere ich einfach den Wert von SS nach DS und ES.
 
 Auf Windows wird das Ausführen von 64-Bit-Code in einem 32-Bit-Prozess übrigens auch als _Heaven's Gate_ bezeichnet (und wird unter anderem von [WoW64](https://en.wikipedia.org/wiki/WoW64) genutzt). Ich weiss nicht, ob die obige Prozedur dann ein _Hell's Gate_ darstellt ;-)
 
@@ -152,6 +151,8 @@ Obwohl ich beim Entwickeln der Einfachheit halber MinGW verwendet habe können d
 
 
 ### Handler für SIGSEGV
+
+Es handelt sich bei diesem Projekt ja um einen Proof-of-Concept und daher hatte ich nicht den Anspruch hatte, besonders robusten und sicheren Code zu schreiben. Trotzdem wollte ich nicht blindlings darauf vertrauen, dass die die zu ladende Programmdatei korrekt ist. Da die Programmdatei mit Memory-mapped IO gelesen wird könnte eine fehlerhafte Datei zu ungültigen Speicherzugriffen führen. Um nun aber nicht bei jedem Speicherzugriff die Adresse, auf die zugegriffen wird, überprüfen zu müssen habe ich zu einem Trick gegriffen. Am Anfang der Funktion `load_image` installiere ich einen Handler für das Signal _SIGSEGV_ (also das Signal, das bei einem ungültigen Speicherzugriff an den Prozess gesendet wird). Dieser Handler gibt einfach eine Fehlermeldung aus und beendet das Programm. Am Ende der Funktion wird dieser Handler wieder entfernt. Zusätzlich überprüfe ich dann doch noch an einigen Stellen, ob die Grösse von bestimmten Datenstrukturen (zum Beispiel die Datei-Header) korrekt ist und ob Zeiger auf Speicherstellen innerhalb der in den Speicher gelesenen Datei zeigen.
 
 
 ## Demo des Programms
@@ -197,9 +198,9 @@ So sieht es aus wenn man eines der Testprogramme mit WoL auf einem Linux-System 
     INFO:  loaded program successfully, entry point = 0x401000
     INFO:  running program...
 
-    >>>>>>>>>>>>
+    >>>>>>>>>>>>>>>>>>>>>>>>
     Hello, Windows
-    <<<<<<<<<<<<
+    <<<<<<<<<<<<<<<<<<<<<<<<
 
     INFO:  exit code = 1
 
@@ -208,33 +209,33 @@ TODO: Speicherlayout des Testprogramms - Windows und Linux mit WoL
 #### Linux mit WoL
 
     $ ./memmap.py <PID von WoL>
-    ADDRESS RANGE                    	  RSS /  SIZE	PERM	NAME
-    0000000000400000-0000000000401000	   4K /    4K	r-xp	wol
-    0000000000401000-0000000000402000	   4K /    4K	r-xp	[anon]
-    0000000000402000-0000000000404000	   8K /    8K	rwxp	[anon]
-    0000000010400000-0000000010402000	   8K /    8K	r-xp	wol
-    0000000010602000-0000000010603000	   4K /    4K	r-xp	wol
-    0000000010603000-0000000010604000	   4K /    4K	rwxp	wol
-    0000000012204000-0000000012225000	   4K /  132K	rwxp	[heap]
-    0000000068481000-0000000068482000	   4K /    4K	r-xp	[anon]
-    0000000068482000-0000000068485000	  12K /   12K	rwxp	[anon]
-    00000000ff000000-00000000ff100000	   4K / 1024K	rwxp	[anon]
-    00007f98a6f00000-00007f98a7095000	   1M /    1M	r-xp	libc-2.24.so
-    00007f98a7095000-00007f98a7295000	    0 /    2M	---p	libc-2.24.so
-    00007f98a7295000-00007f98a7299000	  16K /   16K	r-xp	libc-2.24.so
-    00007f98a7299000-00007f98a729b000	   8K /    8K	rwxp	libc-2.24.so
-    00007f98a729b000-00007f98a729f000	   8K /   16K	rwxp	[anon]
-    00007f98a729f000-00007f98a72c2000	 132K /  140K	r-xp	ld-2.24.so
-    00007f98a74b7000-00007f98a74b9000	   8K /    8K	rwxp	[anon]
-    00007f98a74c0000-00007f98a74c1000	   4K /    4K	r-xp	kernel32.dll
-    00007f98a74c1000-00007f98a74c2000	   4K /    4K	r-xp	winhello.exe
-    00007f98a74c2000-00007f98a74c3000	   4K /    4K	r-xp	ld-2.24.so
-    00007f98a74c3000-00007f98a74c4000	   4K /    4K	rwxp	ld-2.24.so
-    00007f98a74c4000-00007f98a74c5000	   4K /    4K	rwxp	[anon]
-    00007ffd68157000-00007ffd68178000	  12K /  132K	rwxp	[stack]
-    00007ffd681f7000-00007ffd681f9000	    0 /    8K	r--p	[vvar]
-    00007ffd681f9000-00007ffd681fb000	   4K /    8K	r-xp	[vdso]
-    ffffffffff600000-ffffffffff601000	    0 /    4K	r-xp	[vsyscall]
+ADDRESS RANGE                    	  RSS /  SIZE	PERM	NAME
+0000000000400000-0000000000401000	   4K /    4K	r-xp	wol
+0000000000401000-0000000000402000	   4K /    4K	r-xp	[anon]
+0000000000402000-0000000000404000	   8K /    8K	rwxp	[anon]
+0000000010400000-0000000010402000	   8K /    8K	r-xp	wol
+0000000010602000-0000000010603000	   4K /    4K	r-xp	wol
+0000000010603000-0000000010604000	   4K /    4K	rwxp	wol
+0000000012204000-0000000012225000	   4K /  132K	rwxp	[heap]
+0000000068481000-0000000068482000	   4K /    4K	r-xp	[anon]
+0000000068482000-0000000068485000	  12K /   12K	rwxp	[anon]
+00000000ff000000-00000000ff100000	   4K / 1024K	rwxp	[anon]
+00007f98a6f00000-00007f98a7095000	   1M /    1M	r-xp	libc-2.24.so
+00007f98a7095000-00007f98a7295000	    0 /    2M	---p	libc-2.24.so
+00007f98a7295000-00007f98a7299000	  16K /   16K	r-xp	libc-2.24.so
+00007f98a7299000-00007f98a729b000	   8K /    8K	rwxp	libc-2.24.so
+00007f98a729b000-00007f98a729f000	   8K /   16K	rwxp	[anon]
+00007f98a729f000-00007f98a72c2000	 132K /  140K	r-xp	ld-2.24.so
+00007f98a74b7000-00007f98a74b9000	   8K /    8K	rwxp	[anon]
+00007f98a74c0000-00007f98a74c1000	   4K /    4K	r-xp	kernel32.dll
+00007f98a74c1000-00007f98a74c2000	   4K /    4K	r-xp	winhello.exe
+00007f98a74c2000-00007f98a74c3000	   4K /    4K	r-xp	ld-2.24.so
+00007f98a74c3000-00007f98a74c4000	   4K /    4K	rwxp	ld-2.24.so
+00007f98a74c4000-00007f98a74c5000	   4K /    4K	rwxp	[anon]
+00007ffd68157000-00007ffd68178000	  12K /  132K	rwxp	[stack]
+00007ffd681f7000-00007ffd681f9000	    0 /    8K	r--p	[vvar]
+00007ffd681f9000-00007ffd681fb000	   4K /    8K	r-xp	[vdso]
+ffffffffff600000-ffffffffff601000	    0 /    4K	r-xp	[vsyscall]
 
 #### Windows
 
@@ -294,6 +295,13 @@ TODO: Speicherlayout des Testprogramms - Windows und Linux mit WoL
 Wie man sieht wird das Programm auf Windows mit Hilfe von WoW64 ausgeführt weil es sich ja um ein 32-Bit-Programm handelt.
 
 
+## Zusammenfassung
+
+TODO
+
+Der Quellcode zu diesem Artikel findet sich auf [GitHub](TODO) und steht unter der BSD-Lizenz.
+
+
 ## Literaturliste
 
 * http://bytepointer.com/resources/pietrek_peering_inside_pe.htm
@@ -305,6 +313,3 @@ Wie man sieht wird das Programm auf Windows mit Hilfe von WoW64 ausgeführt weil
 * https://stackoverflow.com/questions/24113729/switch-from-32bit-mode-to-64-bit-long-mode-on-64bit-linux/32384358
 * http://www.corsix.org/content/dll-injection-and-wow64
 * https://lldb.llvm.org/use/map.html#breakpoint-commands
-
-
-Der Quellcode zu diesem Artikel findet sich auf [GitHub](TODO) und steht unter der BSD-Lizenz.
