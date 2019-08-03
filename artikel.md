@@ -1,3 +1,8 @@
+Title: Gastarbeiter Teil 1 - Windows-Programme auf Linux ausführen
+Date: 2019-08-03 12:30
+Category: Hacks
+
+
 # Gastarbeiter Teil 1 - Windows-Programme auf Linux ausführen
 
 ## Einführung
@@ -29,6 +34,7 @@ WoL: Kernel <-> Linux API <-> eigene KERNEL32.DLL <-> Programm
 
  Der folgende Code-Schnippsel zeigt die Implementierung der Funktion `WriteFile` in dieser DLL.
 
+    :::c
     bool __stdcall WriteFile(
         HANDLE   hFile,
         void     *lpBuffer,
@@ -99,37 +105,38 @@ Man sollte meinen, das Ausführen des Programms, nachdem es wie oben beschrieben
 
 Ganz so einfach ist es dann in der Praxis doch nicht, es gibt noch ein paar weitere Dinge zu beachten (siehe auch TODO und TODO). Im Deteil sieht die ganze Prozedur (die man auch als [Thunk](https://en.wikipedia.org/wiki/Thunk) oder [Trampolin](https://en.wikipedia.org/wiki/Trampoline_(computing)) bezeichnen kann) dann so aus:
 
+    :::nasm
     .code64
     entry_point_thunk:
-    push    rbp                         # save other registers
+    push    rbp                         ; save other registers
     push    rbx
     push    r12
-    mov     r12, rsp                    # save RSP
-    push    offset l_entry              # push address of 32-bit code as qword
-    mov     dword ptr [rsp + 4], 0x23   # overwrite the high dword with the segment selector
-    retf                                # "return" to 32-bit code
+    mov     r12, rsp                    ; save RSP
+    push    offset l_entry              ; push address of 32-bit code as qword
+    mov     dword ptr [rsp + 4], 0x23   ; overwrite the high dword with the segment selector
+    retf                                ; "return" to 32-bit code
 
     l_entry:
     .code32
-    mov     esp, esi                    # load new stack address (2nd argument - stack_ptr)
-    push    ss                          # set DS and ES to the value of SS
+    mov     esp, esi                    ; load new stack address (2nd argument - stack_ptr)
+    push    ss                          ; set DS and ES to the value of SS
     pop     ds
     push    ss
     pop     es
-    call    edi                         # call entry point of Windows program passed as 1st argument (entry_point)
-    push    0x0                         # set DS back to 0
+    call    edi                         ; call entry point of Windows program passed as 1st argument (entry_point)
+    push    0x0                         ; set DS back to 0
     pop     ds
-    push    0x33                        # push segment selector and address of 64-bit code
+    push    0x33                        ; push segment selector and address of 64-bit code
     push    offset l_return
-    retf                                # "return" to 64-bit code
+    retf                                ; "return" to 64-bit code
 
     l_return:
     .code64
-    mov     rsp, r12                    # restore RSP
-    pop     r12                         # restore other registers
+    mov     rsp, r12                    ; restore RSP
+    pop     r12                         ; restore other registers
     pop     rbx
     pop     rbp
-    ret                                 # return to main()
+    ret                                 ; return to main()
 
 Vom Hauptprogramm aufgerufen wird diese Routine mit `entry_point_thunk(<real entry point>, <new stack pointer>)`. Auf den ersten Blick wirst du wahrscheinlich in dem Code den erwähnten Far Call vermissen. Stattdessen verwende ich sowohl für den Aufruf des 32-Bit-Codes als auch für die Rückkehr zum 64-Bit-Code einen Far Return (die Instruktion RETF). Das mache ich weil von einem Far Call ja die Rücksprungadresse und der Segmentselektor auf dem Stack abgelegt werden, die ich dann erstmal wieder vom Stack entfernen müsste. Mit einem Far Return spare ich mir das, abgeschaut habe ich mir diesen Trick [hier](http://blog.rewolf.pl/blog/?p=102).
 
@@ -159,6 +166,7 @@ Es handelt sich bei diesem Projekt ja um einen Proof-of-Concept und daher hatte 
 
 So sieht es aus wenn man eines der Testprogramme mit WoL auf einem Linux-System startet (mit aktivierten Debug-Ausgaben):
 
+    :::text
     $ uname -a
     Linux debian 4.9.0-7-amd64 #1 SMP Debian 4.9.110-3+deb9u2 (2018-08-13) x86_64 GNU/Linux
     $
@@ -204,95 +212,8 @@ So sieht es aus wenn man eines der Testprogramme mit WoL auf einem Linux-System 
 
     INFO:  exit code = 1
 
-TODO: Speicherlayout des Testprogramms - Windows und Linux mit WoL
-
-#### Linux mit WoL
-
-    $ ./memmap.py <PID von WoL>
-ADDRESS RANGE                    	  RSS /  SIZE	PERM	NAME
-0000000000400000-0000000000401000	   4K /    4K	r-xp	wol
-0000000000401000-0000000000402000	   4K /    4K	r-xp	[anon]
-0000000000402000-0000000000404000	   8K /    8K	rwxp	[anon]
-0000000010400000-0000000010402000	   8K /    8K	r-xp	wol
-0000000010602000-0000000010603000	   4K /    4K	r-xp	wol
-0000000010603000-0000000010604000	   4K /    4K	rwxp	wol
-0000000012204000-0000000012225000	   4K /  132K	rwxp	[heap]
-0000000068481000-0000000068482000	   4K /    4K	r-xp	[anon]
-0000000068482000-0000000068485000	  12K /   12K	rwxp	[anon]
-00000000ff000000-00000000ff100000	   4K / 1024K	rwxp	[anon]
-00007f98a6f00000-00007f98a7095000	   1M /    1M	r-xp	libc-2.24.so
-00007f98a7095000-00007f98a7295000	    0 /    2M	---p	libc-2.24.so
-00007f98a7295000-00007f98a7299000	  16K /   16K	r-xp	libc-2.24.so
-00007f98a7299000-00007f98a729b000	   8K /    8K	rwxp	libc-2.24.so
-00007f98a729b000-00007f98a729f000	   8K /   16K	rwxp	[anon]
-00007f98a729f000-00007f98a72c2000	 132K /  140K	r-xp	ld-2.24.so
-00007f98a74b7000-00007f98a74b9000	   8K /    8K	rwxp	[anon]
-00007f98a74c0000-00007f98a74c1000	   4K /    4K	r-xp	kernel32.dll
-00007f98a74c1000-00007f98a74c2000	   4K /    4K	r-xp	winhello.exe
-00007f98a74c2000-00007f98a74c3000	   4K /    4K	r-xp	ld-2.24.so
-00007f98a74c3000-00007f98a74c4000	   4K /    4K	rwxp	ld-2.24.so
-00007f98a74c4000-00007f98a74c5000	   4K /    4K	rwxp	[anon]
-00007ffd68157000-00007ffd68178000	  12K /  132K	rwxp	[stack]
-00007ffd681f7000-00007ffd681f9000	    0 /    8K	r--p	[vvar]
-00007ffd681f9000-00007ffd681fb000	   4K /    8K	r-xp	[vdso]
-ffffffffff600000-ffffffffff601000	    0 /    4K	r-xp	[vsyscall]
-
-#### Windows
-
-    ADDRESS RANGE                             RSS /  SIZE   PERM    NAME
-    00000000000e0000-00000000001a5000        788K /     ?   r       locale.nls
-    0000000000400000-0000000000401000          4K /     ?   r       winhello.exe
-    0000000000401000-0000000000402000          4K /     ?   xr      winhello.exe
-    0000000000402000-0000000000403000          4K /     ?   r       winhello.exe
-    0000000000403000-0000000000404000          4K /     ?   rw      winhello.exe
-    0000000075180000-0000000075181000          4K /     ?   r       KernelBase.dll
-    0000000075181000-000000007532f000          1M /     ?   xr      KernelBase.dll
-    000000007532f000-0000000075332000         12K /     ?   rw      KernelBase.dll
-    0000000075332000-0000000075333000          4K /     ?   wc      KernelBase.dll
-    0000000075333000-0000000075364000        196K /     ?   r       KernelBase.dll
-    00000000753a0000-00000000753a1000          4K /     ?   r       kernel32.dll
-    00000000753a1000-00000000753b0000         60K /     ?   ?       kernel32.dll
-    00000000753b0000-0000000075411000        388K /     ?   xr      kernel32.dll
-    0000000075411000-0000000075420000         60K /     ?   ?       kernel32.dll
-    0000000075420000-0000000075448000        160K /     ?   r       kernel32.dll
-    0000000075448000-0000000075450000         32K /     ?   ?       kernel32.dll
-    0000000075450000-0000000075451000          4K /     ?   rw      kernel32.dll
-    0000000075451000-0000000075460000         60K /     ?   ?       kernel32.dll
-    0000000075460000-0000000075461000          4K /     ?   r       kernel32.dll
-    0000000075461000-0000000075470000         60K /     ?   ?       kernel32.dll
-    0000000075470000-0000000075475000         20K /     ?   r       kernel32.dll
-    0000000075475000-0000000075480000         44K /     ?   ?       kernel32.dll
-    00000000776a0000-00000000776a1000          4K /     ?   r       wow64.dll
-    00000000776a1000-00000000776d5000        208K /     ?   xr      wow64.dll
-    00000000776d5000-00000000776e9000         80K /     ?   r       wow64.dll
-    00000000776e9000-00000000776ea000          4K /     ?   rw      wow64.dll
-    00000000776ea000-00000000776f2000         32K /     ?   r       wow64.dll
-    0000000077700000-0000000077701000          4K /     ?   r       wow64cpu.dll
-    0000000077701000-0000000077704000         12K /     ?   xr      wow64cpu.dll
-    0000000077704000-0000000077705000          4K /     ?   r       wow64cpu.dll
-    0000000077705000-0000000077706000          4K /     ?   rw      wow64cpu.dll
-    0000000077706000-0000000077707000          4K /     ?   r       wow64cpu.dll
-    0000000077707000-0000000077708000          4K /     ?   xr      wow64cpu.dll
-    0000000077708000-000000007770a000          8K /     ?   r       wow64cpu.dll
-    0000000077710000-0000000077711000          4K /     ?   r       wow64win.dll
-    0000000077711000-000000007774e000        244K /     ?   xr      wow64win.dll
-    000000007774e000-0000000077776000        160K /     ?   r       wow64win.dll
-    0000000077776000-0000000077777000          4K /     ?   rw      wow64win.dll
-    0000000077777000-0000000077779000          8K /     ?   wc      wow64win.dll
-    0000000077779000-0000000077788000         60K /     ?   r       wow64win.dll
-    0000000077790000-0000000077791000          4K /     ?   r       ntdll.dll
-    0000000077791000-00000000778a5000          1M /     ?   xr      ntdll.dll
-    00000000778a5000-00000000778ab000         24K /     ?   rw      ntdll.dll
-    00000000778ab000-0000000077920000        468K /     ?   r       ntdll.dll
-    00007ffe06f70000-00007ffe06f71000          4K /     ?   r       ntdll.dll
-    00007ffe06f71000-00007ffe07080000          1M /     ?   xr      ntdll.dll
-    00007ffe07080000-00007ffe070c6000        280K /     ?   r       ntdll.dll
-    00007ffe070c6000-00007ffe070c7000          4K /     ?   rw      ntdll.dll
-    00007ffe070c7000-00007ffe070c9000          8K /     ?   wc      ntdll.dll
-    00007ffe070c9000-00007ffe070d1000         32K /     ?   rw      ntdll.dll
-    00007ffe070d1000-00007ffe07151000        512K /     ?   r       ntdll.dll
-
-Wie man sieht wird das Programm auf Windows mit Hilfe von WoW64 ausgeführt weil es sich ja um ein 32-Bit-Programm handelt.
+Das nachfolgende Bild zeigt das Speicherlayout von WoL während es `winhello.exe` ausführt.
+![](WoL/images/memmap.svg)
 
 
 ## Zusammenfassung
@@ -304,12 +225,12 @@ Der Quellcode zu diesem Artikel findet sich auf [GitHub](TODO) und steht unter d
 
 ## Literaturliste
 
-* http://bytepointer.com/resources/pietrek_peering_inside_pe.htm
-* https://eli.thegreenplace.net/2011/09/06/stack-frame-layout-on-x86-64
-* https://sourceware.org/binutils/docs-2.32/as/index.html
-* https://stackoverflow.com/questions/18024672/what-registers-are-preserved-through-a-linux-x86-64-function-call
-* https://stackoverflow.com/questions/41921711/running-32-bit-code-in-64-bit-process-on-linux-memory-access
-* http://blog.rewolf.pl/blog/?p=102
-* https://stackoverflow.com/questions/24113729/switch-from-32bit-mode-to-64-bit-long-mode-on-64bit-linux/32384358
-* http://www.corsix.org/content/dll-injection-and-wow64
-* https://lldb.llvm.org/use/map.html#breakpoint-commands
+* <http://bytepointer.com/resources/pietrek_peering_inside_pe.htm>
+* <https://eli.thegreenplace.net/2011/09/06/stack-frame-layout-on-x86-64>
+* <https://sourceware.org/binutils/docs-2.32/as/index.html>
+* <https://stackoverflow.com/questions/18024672/what-registers-are-preserved-through-a-linux-x86-64-function-call>
+* <https://stackoverflow.com/questions/41921711/running-32-bit-code-in-64-bit-process-on-linux-memory-access>
+* <http://blog.rewolf.pl/blog/?p=102>
+* <https://stackoverflow.com/questions/24113729/switch-from-32bit-mode-to-64-bit-long-mode-on-64bit-linux/32384358>
+* <http://www.corsix.org/content/dll-injection-and-wow64>
+* <https://lldb.llvm.org/use/map.html#breakpoint-commands>
