@@ -26,12 +26,9 @@ Was bedeutet das nun konkret? Man muss dazu wissen, das Systemroutinen letztendl
 
 Um nun die Windows API für das Beispielprogramm auf Linux zu emulieren habe ich eine eigene sehr einfache `KERNEL32.DLL` geschrieben habe, die nur die beiden vom Beispielprogramm benötigten Systemroutinen `GetStdHandle` und `WriteFile` zur Verfügung stellt. Diese DLL verwendet logischerweise nicht wie auf Windows die `NTDLL.DLL` sondern die Linux API, genauer gesagt die Funktion `write`, und ist somit das Bindeglied zwischen dem Windows-Programm und Linux.
 
-Das folgende Diagramm zeigt nochmal die durchlaufenen Komponenten wenn ein Programm eine Systemroutine verwendet, links für Windows und rechts für WoL.
+Das folgende Bild zeigt nochmal die durchlaufenen Komponenten wenn ein Programm eine Systemroutine verwendet, links für Windows und rechts für WoL.
+![Ablauf einer Systemroutine](WoL/images/syscall.svg)
  
-TODO
-Windows: Kernel <-> Native API (NTDLL.DLL) <-> Windows API (KERNEL32.DLL) <-> Programm
-WoL: Kernel <-> Linux API <-> eigene KERNEL32.DLL <-> Programm
-
  Der folgende Code-Schnippsel zeigt die Implementierung der Funktion `WriteFile` in dieser DLL.
 
     :::c
@@ -71,13 +68,11 @@ Die zweite Besonderheit ist, dass die Funktion mit der Aufrufkonvention `__stdca
 
 Zum anderen nutzen Windows und Linux unterschiedliche Dateiformate für ausführbare Programme, Windows verwendet die Formate PE (32 Bit) bzw. PE+ (64 Bit), Linux verwendet ELF. Der Loader von Linux, also die Komponente im Betriebssystem, die für das Laden von Programmen zuständig ist, kann daher Windows-Programme gar nicht laden. Das musste ich also selber implementieren. Das stellte sich allerdings als relativ einfach heraus, da PE so entworfen wurde , dass die ganze Programmdatei (das _Image_) mit Memory-mapped IO an einem Stück in den Speicher geladen werden kann. Das bedeutet, dass die bei der Ausführung verwendeten Datenstrukturen, wie die Import- und Export-Tabellen, bereits in der Datei in sehr ähnlicher Form vorhanden sind und nicht erst beim Laden der Datei im Speicher erstellt werden müssen (im Gegensatz zu dem Vorgängerformat NE, das von den 16-Bit-Windows-Versionen verwendet wurde).
 
-Eine sehr gute Beschreibung des PE-Formats und der zugrunde liegenden Konzepte bietet der Artikel [Peering Inside the PE](https://docs.microsoft.com/en-us/previous-versions/ms809762(v=msdn.10)). Deswegen werde ich in diesem Artikel auch nicht auf die Details des Formats eingehen. Weitergehende Informationen findet man auch in der offiziellen PE-Spezifikation von Microsoft. Die von PE verwendeten Datenstrukturen sind bei Windows in der Header-Datei `winnt.h` definiert. WoL verwendet allerdings nicht direkt diese Header-Datei sondern die benötigten Strukturen sind, basierend auf den Definitionen in `winnt.h`, in der Datei `wol.h` definiert. Der Grund dafür ist, dass die Datei `winnt.h` eine Reihe von MSVC-spezifischen Konstrukten enthält, mit denen weder GCC noch Clang zurechtkommen.
+Eine sehr gute Beschreibung des PE-Formats und der zugrunde liegenden Konzepte bietet der Artikel [Peering Inside the PE](https://docs.microsoft.com/en-us/previous-versions/ms809762(v=msdn.10)). Deswegen werde ich in diesem Artikel auch nicht auf die Details des Formats eingehen. Weitergehende Informationen findet man auch in der offiziellen PE-Spezifikation von Microsoft. [Hier](https://drive.google.com/file/d/0B3_wGJkuWLytbnIxY1J5WUs4MEk/view) findet man ein hilfreiches Übersichtsbild, das die einzelnen Datenstrukturen und ihre Beziehungen zueinander darstellt. Die von PE verwendeten Datenstrukturen sind bei Windows in der Header-Datei `winnt.h` definiert. WoL verwendet allerdings nicht direkt diese Header-Datei sondern die benötigten Strukturen sind, basierend auf den Definitionen in `winnt.h`, in der Datei `wol.h` definiert. Der Grund dafür ist, dass die Datei `winnt.h` eine Reihe von MSVC-spezifischen Konstrukten enthält, mit denen weder GCC noch Clang zurechtkommen.
 
-TODO: Übersichtsbild
+Es wird bei PE und PE+ davon ausgegangen, dass das Programm immer an die gleiche Adresse (0x00400000) geladen wird, deswegen enthält die Programmdatei meistens keine Relocation-Informationen. Bei 64-Bit-Prozessen unter Linux ist die Adresse 0x00400000 allerdings schon belegt, sie wird standardmässig auch von Linux als Basisadresse von Programmen verwendet. Damit sie für das Windows-Programm verwendet werden kann musste ich deshalb beim Linken von WoL eine andere Startadresse für das Text-Segment angeben, ich habe mich für die Adresse 0x10400000 entschieden (mit der Option `-Wl,-Ttext,0x10400000`).
 
-Es wird bei PE und PE+ davon ausgegangen, dass das Programm immer an die gleiche Adresse (0x00400000) geladen wird, deswegen enthält die Programmdatei meistens (TODO: Wie ist das bei MSVC?) keine Relocation-Informationen. Bei 64-Bit-Prozessen unter Linux ist die Adresse 0x00400000 allerdings schon belegt, sie wird standardmässig auch von Linux als Basisadresse von Programmen verwendet. Damit sie für das Windows-Programm verwendet werden kann musste ich deshalb beim Linken von WoL eine andere Startadresse für das Text-Segment angeben, ich habe mich für die Adresse 0x10400000 entschieden (mit der Option `-Wl,-Ttext,0x10400000`).
-
-Es gibt je nach verwendetem Compiler / Linker unterschiedliche Ausprägungen des Formats, so erzeugt MinGW zum Beispiel im Gegensatz zum MSVC separate Segmente für die Import- und Export-Tabellen (`.idata` und `.edata`), mit dem MSVC erzeugte Programme enthalten dafür standardmässig doch Relocation-Informationen.
+Es gibt je nach verwendetem Compiler / Linker unterschiedliche Ausprägungen des Formats, so erzeugt MinGW zum Beispiel im Gegensatz zum MSVC separate Segmente für die Import- und Export-Tabellen (`.idata` und `.edata`), mit dem MSVC erzeugte Programme enthalten dafür standardmässig (wenn man nicht die Linker-Option `/FIXED` angibt) doch Relocation-Informationen (in dem Segment `.reloc`).
 
 Das Laden des Programms und der verwendeten DLL(s) ist in WoL in der Funktion `load_image` implementiert, wobei ich mich auf PE, also auf 32-Bit-Programme, beschränkt habe. Folgende Schritte sind dafür im einzelnen notwendig.
 
@@ -103,7 +98,7 @@ Das Laden des Programms und der verwendeten DLL(s) ist in WoL in der Funktion `l
 
 Man sollte meinen, das Ausführen des Programms, nachdem es wie oben beschrieben in den Speicher geladen wurde, wäre trivial - einfach zu der Startadresse des Code-Segments springen. Allerdings gibt es da bei WoL eine Schwierigkeit. WoL ist ja ein 64-Bit-Programm, die Testprogramme, die ich ausführen wollte, sind (zumindest momentan) noch 32-Bit-Programme. Nun ist es aber so, dass das Ausführen von 32-Bit-Code in einem 64-Bit-Prozess standardmässig nicht funktioniert. Das liegt daran, dass sich anhand der Codierung der Instruktionen nicht eindeutig sagen lässt, ob es sich bei den Instruktionen um 32-bittigen oder 64-bittigen Code handelt. Das muss man dem Prozessor explizit mitteilen. Das geschieht über den [Segment-Deskriptor](https://en.wikipedia.org/wiki/Segment_descriptor) für das Code-Segment (also der Deskriptor, der über den Selektor im Register CS referenziert wird). Wenn in diesem Deskriptor das L-Bit gesetzt ist, wird der sogenannte [Long Mode](https://en.wikipedia.org/wiki/X86-64#Operating_modes) aktiviert und der Code wird als 64-Bit-Code interpretiert. Genau so einen Deskriptor mit gesetztem L-Bit verwenden natürlich 64-Bit-Programme (mit dem Selektor 0x33). Allerdings fand ich nach einiger Recherche heraus, dass es sowohl bei Linux als auch bei Windows noch einen zweiten Deskriptor gibt, der das L-Bit nicht gesetzt hat (mit dem Selektor 0x23). Beide Betriebssysteme bieten also eine (wenn auch undokumentierte) Möglichkeit innerhalb eines Prozesses zwischen 32- und 64-Bit-Code hin und her zu wechseln. Dazu muss man "nur" den Code mit einen sogenannten _Far Call_ (also eine CALL-Instruktion, die neben der Zieladresse auch einen Segmentselektor verwendet) mit dem entsprechenden Selektor aufrufen und am Ende mit einem _Far Return_, wieder mit dem entsprechenden Selektor, zurückspringen.
 
-Ganz so einfach ist es dann in der Praxis doch nicht, es gibt noch ein paar weitere Dinge zu beachten (siehe auch TODO und TODO). Im Deteil sieht die ganze Prozedur (die man auch als [Thunk](https://en.wikipedia.org/wiki/Thunk) oder [Trampolin](https://en.wikipedia.org/wiki/Trampoline_(computing)) bezeichnen kann) dann so aus:
+Ganz so einfach ist es dann in der Praxis doch nicht, es gibt noch ein paar weitere Dinge zu beachten (siehe auch [hier](https://stackoverflow.com/a/32384358) und [hier](https://stackoverflow.com/a/41922752)). Im Deteil sieht die ganze Prozedur (die man auch als [Thunk](https://en.wikipedia.org/wiki/Thunk) oder [Trampolin](https://en.wikipedia.org/wiki/Trampoline_(computing)) bezeichnen kann) dann so aus:
 
     :::nasm
     .code64
@@ -213,7 +208,7 @@ So sieht es aus wenn man eines der Testprogramme mit WoL auf einem Linux-System 
     INFO:  exit code = 1
 
 Das nachfolgende Bild zeigt das Speicherlayout von WoL während es `winhello.exe` ausführt.
-![](WoL/images/memmap.svg)
+![Speicherlayout von WoL](WoL/images/memmap.svg)
 
 
 ## Zusammenfassung
@@ -223,14 +218,12 @@ TODO
 Der Quellcode zu diesem Artikel findet sich auf [GitHub](TODO) und steht unter der BSD-Lizenz.
 
 
-## Literaturliste
+## Linkliste
 
-* <http://bytepointer.com/resources/pietrek_peering_inside_pe.htm>
+* <http://blog.rewolf.pl/blog/?p=102>
 * <https://eli.thegreenplace.net/2011/09/06/stack-frame-layout-on-x86-64>
+* <https://lldb.llvm.org/use/map.html#breakpoint-commands>
 * <https://sourceware.org/binutils/docs-2.32/as/index.html>
 * <https://stackoverflow.com/questions/18024672/what-registers-are-preserved-through-a-linux-x86-64-function-call>
-* <https://stackoverflow.com/questions/41921711/running-32-bit-code-in-64-bit-process-on-linux-memory-access>
-* <http://blog.rewolf.pl/blog/?p=102>
 * <https://stackoverflow.com/questions/24113729/switch-from-32bit-mode-to-64-bit-long-mode-on-64bit-linux/32384358>
-* <http://www.corsix.org/content/dll-injection-and-wow64>
-* <https://lldb.llvm.org/use/map.html#breakpoint-commands>
+* <https://stackoverflow.com/questions/41921711/running-32-bit-code-in-64-bit-process-on-linux-memory-access>
