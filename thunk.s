@@ -1,3 +1,10 @@
+#
+# WoL - run simple Windows programs on Linux
+#
+# Copyright(C) 2017-2019 Constantin Wiemer
+#
+
+
 .intel_syntax noprefix
 .global entry_point_thunk
 

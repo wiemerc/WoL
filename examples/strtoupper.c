@@ -1,3 +1,8 @@
+//
+// strtoupper.c - convert a string to uppercase (program without any interaction with the OS)
+//
+
+
 // The string needs to be defined as global *array* (not pointer), otherwise GCC
 // will treat it as a constant and put it into the .rdata segment, which gets
 // memory-mapped read-only by our loader and the string can therefore not be changed.
