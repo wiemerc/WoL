@@ -1,5 +1,4 @@
 Title: Gastarbeiter - Windows-Programme auf Linux ausführen - Teil 1
-Date: TODO
 Category: Hacks
 
 
@@ -25,7 +24,7 @@ Was bedeutet das nun konkret? Man muss dazu wissen, dass Systemroutinen letztend
 Um nun die Windows API für die Testprogramme auf Linux zu emulieren habe ich eine eigene, sehr einfache `KERNEL32.DLL` geschrieben, die nur die beiden von den Testprogrammen benötigten Systemroutinen `GetStdHandle` und `WriteFile` zur Verfügung stellt. Diese DLL verwendet logischerweise nicht wie auf Windows die `NTDLL.DLL` sondern die Linux API, genauer gesagt die Funktion `write`, und ist somit das Bindeglied zwischen dem Windows-Programm und Linux.
 
 Das folgende Bild zeigt nochmal die durchlaufenen Komponenten wenn ein Programm eine Systemroutine verwendet, links für Windows und rechts für WoL.
-![Ablauf einer Systemroutine](WoL/images/syscall.svg)
+![Ablauf einer Systemroutine]({attach}/WoL/images/syscall.svg)
  
  Der folgende Code-Schnipsel zeigt die Implementierung der Funktion [`WriteFile`](https://github.com/wiemerc/WoL/blob/0916f43a3f538d9052ccfa71a3f4f3fce0edb801/libs/kernel32.c#L42) in dieser DLL.
 
@@ -86,7 +85,7 @@ Das Laden des Programms und der verwendeten DLL(s) ist in WoL in der Funktion [`
         Weil die Offsets wie gerade erwähnt (normalerweise) nicht an Seitengrenzen ausgerichtet sind kann man ebenfalls nicht einfach die Segmente aus der Datei direkt mappen (der Offset für `mmap` muss ein Vielfaches der Seitengrösse sein und `mmap` ignoriert auch die mit `lseek` gesetzte Position in der Datei).
     * Berechtigungen je nach Typ des Segments setzen (Das Code-Segment muss natürlich ausführbar sein, das Daten-Segment dafür beschreibbar und so weiter)
 
-4. Import-Tabelle bearbeiten (siehe auch den Abschnitt [PE File Imports](https://docs.microsoft.com/en-us/previous-versions/ms809762(v=msdn.10)#pe-file-imports) in _Peering Inside the PE_):  
+4. Import-Tabelle bearbeiten (siehe auch den Abschnitt [PE File Imports](https://docs.microsoft.com/en-us/previous-versions/ms809762(v=msdn.10)#pe-file-imports) in _Peering Inside the PE_)  
     Die Import-Tabelle besteht aus einer Liste der von dem Programm verwendeten DLLs (Liste von `IMAGE_IMPORT_DESCRIPTOR`-Strukturen) und jeweils einer Liste der aus der DLL verwendeten Funktionen (Liste von `IMAGE_THUNK_DATA`-Unions). Im Orginalzustand (also so wie sie in der Programmdatei abgelegt ist) besteht die Funktionsliste aus RVAs (das Feld `AddressOfData` der Union), die jeweils auf eine weitere Datenstruktur (`IMAGE_IMPORT_BY_NAME`) verweisen, die den Namen der Funktion enthält. Diese Liste wird jedoch auch vom Programmcode als Sprungtabelle benutzt. Das bedeutet, dass der Aufruf einer Funktion einer DLL im Programmcode als indirekter Sprung an die in der Funktionsliste der DLL angegebene Adresse (das Feld `Function` der Union) implementiert ist. Deshalb müssen die RVAs durch Zeiger auf die eigentlichen Funktionen ersetzt werden bevor das Programm ausgeführt werden kann, was jedoch einfacher ist als wenn man die Sprungziele direkt im Code patchen müsste. Zuvor muss / müssen natürlich die verwendete(n) DLL(s) durch einen rekursiven Aufruf von `load_image` geladen werden. Dieser Aufruf gibt die Namen und die zugehörigen Adressen der von der DLL exportierten Funktionen zurück, die ich dann zum Patchen der Import-Tabelle verwende (siehe auch den Abschnitt [PE File Exports](https://docs.microsoft.com/en-us/previous-versions/ms809762(v=msdn.10)#pe-file-exports) in _Peering Inside the PE_).
 
 
@@ -133,7 +132,7 @@ Vom Hauptprogramm aufgerufen wird diese Routine mit `entry_point_thunk(<real ent
 
 Drei weitere Dinge sollte ich noch erwähnen. Erstens muss man für den 32-Bit-Code einen separaten Stack verwenden, der in den unteren 4GB des 64-Bit-Adressraums liegen muss, so dass er von dem 32-Bit-Code adressiert werden kann. Der vom Betriebssystem bereitgestellte Stack liegt an einer höheren Adresse und ist somit ungeeignet (mal abgesehen davon, dass es sowieso sinnvoll ist, für das Windows-Programm einen eigenen Stack zu verwenden). Für diesen Stack wird in `load_image` ein anonymes Mapping an der Adresse 0xff000000 mit einer Grösse von einem Megabyte angelegt, diese Adresse plus die Grösse, also 0xff001000, wird dann der obigen Routine als neuer Wert für den Stack Pointer übergeben (weil der Stack ja von oben nach unten wächst).
 
-Zweitens müssen vor dem Eintritt in die 32-Bit-Welt einige Register gesichert werden. Zum einen sind das die Register RBP und RBX. Das sind zwar 64-Bit-Register, aber die unteren Hälften, nämlich EBP und EBX, könnten auch von 32-bittigem Code genutzt werden. Was ist dann mit den anderen Registern, für die es auch ein 32-Bit-Äquivalent gibt, wie RAX, RSI, RDI und so weiter? Deren Wert muss laut der [ABI](https://stackoverflow.com/questions/18024672/what-registers-are-preserved-through-a-linux-x86-64-function-call) für x86-64 bei einem Funktionsaufruf nicht erhalten bleiben. Zum anderen muss natürlich RSP gesichert werden weil ich ja ESP ein paar Zeilen später auf einen neuen Wert setze (um den separaten Stack zu verwenden). Logischerweise kann man RSP nicht auf dem Stack sichern (das Problem mit der Henne und dem Ei...) sondern muss einen anderen Speicherbereich (mit einer bekannten Adresse) oder ein Register dafür nutzen. Ich entschied mich für das Register R12. Das ist nämlich das erste Register, das nicht von 32-Bit-Code genutzt werden kann und dessen Wert bei einem Funktionsaufruf im 64-Bit-Code erhalten bleibt (ebenfalls in der ABI definiert). Welcher 64-Bit-Code, wirst du dich jetzt vielleicht fragen. Das Windows-Programm ist doch ein 32-Bit-Programm. Das stimmt, aber dieses Programm nutzt meine Version der `KERNEL32.DLL`. Die ist auch immer noch 32-bittig, dort wird aber die Systemroutine `write` aufgerufen und dadurch landen wir schlussendlich in dem 64-bittigen Kernel von Linux.
+Zweitens müssen vor dem Eintritt in die 32-Bit-Welt einige Register gesichert werden. Zum einen sind das die Register RBP und RBX. Das sind zwar 64-Bit-Register, aber die unteren Hälften, nämlich EBP und EBX, könnten auch von 32-bittigem Code genutzt werden. Was ist dann mit den anderen Registern, für die es auch ein 32-Bit-Äquivalent gibt, wie RAX, RSI, RDI und so weiter? Deren Wert muss laut der [ABI](https://stackoverflow.com/a/18024743) für x86-64 bei einem Funktionsaufruf nicht erhalten bleiben. Zum anderen muss natürlich RSP gesichert werden weil ich ja ESP ein paar Zeilen später auf einen neuen Wert setze (um den separaten Stack zu verwenden). Logischerweise kann man RSP nicht auf dem Stack sichern (das Problem mit der Henne und dem Ei...) sondern muss einen anderen Speicherbereich (mit einer bekannten Adresse) oder ein Register dafür nutzen. Ich entschied mich für das Register R12. Das ist nämlich das erste Register, das nicht von 32-Bit-Code genutzt werden kann und dessen Wert bei einem Funktionsaufruf im 64-Bit-Code erhalten bleibt (ebenfalls in der ABI definiert). Welcher 64-Bit-Code, wirst du dich jetzt vielleicht fragen. Das Windows-Programm ist doch ein 32-Bit-Programm. Das stimmt, aber dieses Programm nutzt meine Version der `KERNEL32.DLL`. Die ist auch immer noch 32-bittig, dort wird aber die Systemroutine `write` aufgerufen und dadurch landen wir schlussendlich in dem 64-bittigen Kernel von Linux.
 
 Drittens benötigt 32-bittiger Code im Gegensatz zu 64-bittigem den Segmentselektor 0x2b in den Registern DS und ES, also für Datenzugriffe auf den Hauptspeicher (den Grund dafür kenne ich nicht). Das ist der gleiche Selektor, der sowohl im 32- als auch im 64-Bit-Mode für SS, also für Stack-Zugriffe, verwendet wird. Deswegen kopiere ich einfach den Wert von SS nach DS und ES.
 
@@ -191,7 +190,7 @@ So sieht es aus wenn man eines der Testprogramme mit WoL auf einem Linux-System 
     INFO:  exit code = 1
 
 Das nachfolgende Bild zeigt das Speicherlayout von WoL während es `winhello.exe` ausführt.
-![Speicherlayout von WoL](WoL/images/memmap.svg)
+![Speicherlayout von WoL]({attach}/WoL/images/memmap.svg)
 
 
 ## Noch ein paar Anmerkungen
